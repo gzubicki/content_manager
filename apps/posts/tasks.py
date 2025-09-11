@@ -1,6 +1,9 @@
+import asyncio
+
 from celery import shared_task
 from django.utils import timezone
 from telegram import InputMediaPhoto, InputMediaVideo
+
 from .models import Post
 from . import services
 
@@ -39,10 +42,10 @@ def publish_post(post_id: int):
                 im.append(InputMediaPhoto(media=m.tg_file_id or open(m.cache_path, "rb"), has_spoiler=m.has_spoiler))
             elif m.type == "video":
                 im.append(InputMediaVideo(media=m.tg_file_id or open(m.cache_path, "rb"), has_spoiler=m.has_spoiler))
-        res = bot.send_media_group(chat_id=chat, media=im)
+        res = asyncio.run(bot.send_media_group(chat_id=chat, media=im))
         sent_group_ids = [r.message_id for r in res]
 
-    msg = bot.send_message(chat_id=chat, text=post.text)
+    msg = asyncio.run(bot.send_message(chat_id=chat, text=post.text))
     post.message_id = msg.message_id
     post.status = "PUBLISHED"
     post.save()
