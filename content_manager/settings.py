@@ -10,6 +10,7 @@ DEBUG = bool(int(os.getenv("DEBUG", 1)))
 ALLOWED_HOSTS = os.getenv("ALLOWED_HOSTS", "*").split(",")
 TIME_ZONE = os.getenv("TIME_ZONE", "Europe/Warsaw")
 USE_TZ = True
+DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
 INSTALLED_APPS = [
     "jazzmin",
