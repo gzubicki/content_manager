@@ -1,4 +1,3 @@
-version: "3.9"
 services:
   web:
     build: .
@@ -20,7 +19,8 @@ services:
     env_file: .env
     volumes: [".:/app", "media:/var/app/media"]
     depends_on: [web, redis]
-    command: celery -A content_manager beat -l info
+    command: celery -A content_manager beat -l info -s /var/run/celery/celerybeat-schedule
+
 
   db:
     image: postgres:16

@@ -13,3 +13,4 @@ django-jazzmin>=3.0
 itsdangerous>=2.2
 openai>=1.43.0
 dj-database-url>=2.2.0
+regex
