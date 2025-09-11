@@ -1,5 +1,6 @@
 import os
 from pathlib import Path
+from celery.schedules import crontab
 from dotenv import load_dotenv
 load_dotenv()
 
@@ -88,3 +89,20 @@ TELEGRAM_LOGIN_DOMAIN = os.getenv("TELEGRAM_LOGIN_DOMAIN", "")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o")
 OPENAI_TEMPERATURE = float(os.getenv("OPENAI_TEMPERATURE", 0.3))
+
+
+
+CELERY_BEAT_SCHEDULE = {
+    "ensure_drafts": {
+        "task": "apps.posts.tasks.task_ensure_min_drafts",
+        "schedule": 3600.0,  # co godzinę
+    },
+    "publish_due": {
+        "task": "apps.posts.tasks.task_publish_due",
+        "schedule": 60.0,    # co minutę
+    },
+    "housekeeping": {
+        "task": "apps.posts.tasks.task_housekeeping",
+        "schedule": 3600.0,  # co godzinę
+    },
+}

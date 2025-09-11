@@ -20,6 +20,14 @@ class PostForm(forms.ModelForm):
 class ChannelAdmin(admin.ModelAdmin):
     list_display = ("id","name","slug","tg_channel_id","language","draft_target_count")
     search_fields = ("name","slug","tg_channel_id")
+    actions = ["act_fill_to_20"]
+    
+    @admin.action(description="Uzupełnij do 20 (zaznaczone kanały)")
+    def act_fill_to_20(self, request, queryset):
+        total = 0
+        for ch in queryset:
+            total += services.ensure_min_drafts(ch)
+        self.message_user(request, f"Dodano {total} draftów")
 
 @admin.register(Post)
 class PostAdmin(admin.ModelAdmin):

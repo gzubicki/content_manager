@@ -1,38 +1,74 @@
 services:
-  web:
-    build: .
-    env_file: .env
-    volumes: [".:/app", "media:/var/app/media"]
-    ports: ["8000:8000"]
-    depends_on: [db, redis]
-    command: python manage.py runserver 0.0.0.0:8000
-
-  worker:
-    build: .
-    env_file: .env
-    volumes: [".:/app", "media:/var/app/media"]
-    depends_on: [web, redis]
-    command: celery -A content_manager worker -l info
-
-  beat:
-    build: .
-    env_file: .env
-    volumes: [".:/app", "media:/var/app/media"]
-    depends_on: [web, redis]
-    command: celery -A content_manager beat -l info -s /var/run/celery/celerybeat-schedule
-
-
   db:
     image: postgres:16
     environment:
       POSTGRES_DB: app
       POSTGRES_USER: app
       POSTGRES_PASSWORD: pass
-    volumes: ["pgdata:/var/lib/postgresql/data"]
+      TZ: Europe/Warsaw
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U app -d app"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
   redis:
     image: redis:7-alpine
+    command: ["redis-server","--save","","--appendonly","no"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  web:
+    build: .
+    env_file: .env
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - .:/app
+      - media:/var/app/media
+    ports:
+      - "8000:8000"
+    command: bash -lc "python manage.py migrate && python manage.py runserver 0.0.0.0:8000"
+    restart: unless-stopped
+
+  worker:
+    build: .
+    env_file: .env
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - .:/app
+      - media:/var/app/media
+    command: celery -A content_manager worker -l info
+    restart: unless-stopped
+
+  beat:
+    build: .
+    env_file: .env
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - .:/app
+      - media:/var/app/media
+      - celerybeat:/var/run/celery
+    command: celery -A content_manager beat -l info -s /var/run/celery/celerybeat-schedule
+    restart: unless-stopped
 
 volumes:
   pgdata:
   media:
+  celerybeat:
