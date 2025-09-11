@@ -1,0 +1,15 @@
+<div class="tg-wrap" style="--w:360px" data-theme="dark">
+  {% if media and media|length == 1 %}
+    <div class="tg-media"><img src="{{ media.0 }}" alt=""></div>
+  {% elif media and media|length == 2 %}
+    <div class="tg-album two">
+      {% for m in media %}<img src="{{ m }}" alt="">{% endfor %}
+    </div>
+  {% elif media and media|length > 2 %}
+    <div class="tg-album many">
+      <img class="large" src="{{ media.0 }}" alt="">
+      {% for m in media|slice:"1:" %}<img src="{{ m }}" alt="">{% endfor %}
+    </div>
+  {% endif %}
+  <div class="tg-text">{{ text }}</div>
+</div>

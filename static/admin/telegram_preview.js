@@ -1,0 +1,1 @@
+function setPreview(el,w,theme='dark'){el.style.setProperty('--w',w+'px');el.dataset.theme=theme;}

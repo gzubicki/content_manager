@@ -1,0 +1,38 @@
+version: "3.9"
+services:
+  web:
+    build: .
+    env_file: .env
+    volumes: [".:/app", "media:/var/app/media"]
+    ports: ["8000:8000"]
+    depends_on: [db, redis]
+    command: bash -lc "python manage.py migrate && python manage.py runserver 0.0.0.0:8000"
+
+  worker:
+    build: .
+    env_file: .env
+    volumes: [".:/app", "media:/var/app/media"]
+    depends_on: [web, redis]
+    command: celery -A content_manager worker -l info
+
+  beat:
+    build: .
+    env_file: .env
+    volumes: [".:/app", "media:/var/app/media"]
+    depends_on: [web, redis]
+    command: celery -A content_manager beat -l info
+
+  db:
+    image: postgres:16
+    environment:
+      POSTGRES_DB: app
+      POSTGRES_USER: app
+      POSTGRES_PASSWORD: pass
+    volumes: ["pgdata:/var/lib/postgresql/data"]
+
+  redis:
+    image: redis:7-alpine
+
+volumes:
+  pgdata:
+  media:
