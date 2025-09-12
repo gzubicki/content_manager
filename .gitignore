@@ -1,0 +1,42 @@
+# --- Python / Django ---
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+
+# Virtualenvs
+.venv/
+venv/
+
+# Local env files
+.env
+.env.*
+
+# Django runtime
+db.sqlite3
+*.log
+celerybeat-schedule*
+
+# Static/Media (generated)
+staticfiles/
+media/cache/*
+media/tmp/*
+
+# Tests / Coverage / Typing
+.pytest_cache/
+.coverage
+coverage.xml
+htmlcov/
+.mypy_cache/
+.tox/
+
+# Build / Packaging
+dist/
+build/
+*.egg-info/
+
+# IDE / OS
+.idea/
+.vscode/
+.DS_Store
