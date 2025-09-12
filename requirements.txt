@@ -14,4 +14,5 @@ itsdangerous>=2.2
 regex>=2025.9.1
 openai>=1.43.0
 dj-database-url>=2.2.0
-regex
+openai>=1.43.0
+tenacity>=8.3.0
