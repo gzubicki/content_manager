@@ -1,11 +1,12 @@
 from django.contrib import admin, messages
 from django import forms
 from .models import Post, PostMedia, Channel
+from django.contrib.admin.helpers import ActionForm as AdminActionForm
 from .validators import validate_post_text_for_channel
 from . import services
 from .tasks import task_gpt_generate_for_channel, task_gpt_rewrite_post
 
-class ActionForm(forms.Form):
+class PostActionForm(AdminActionForm):
     prompt = forms.CharField(label="Prompt korekty (opcjonalny)", required=False)
 
 class PostForm(forms.ModelForm):
@@ -44,7 +45,7 @@ class ChannelAdmin(admin.ModelAdmin):
 @admin.register(Post)
 class PostAdmin(admin.ModelAdmin):
     form = PostForm
-    action_form = ActionForm
+    action_form = PostActionForm
     list_display = ("id","channel","status","scheduled_at","created_at","dupe_score","short")
     list_filter = ("channel","status","schedule_mode")
     actions = ["act_fill_to_20","act_approve","act_schedule","act_publish_now","act_delete","act_gpt_rewrite"]

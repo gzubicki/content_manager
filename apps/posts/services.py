@@ -87,3 +87,27 @@ def assign_auto_slot(post: Post):
     post.scheduled_at = next_auto_slot(post.channel)
     post.status = "SCHEDULED"
     post.save()
+
+def purge_cache():
+    for pm in PostMedia.objects.filter(expires_at__lt=timezone.now()):
+        try:
+            if pm.cache_path and os.path.exists(pm.cache_path):
+                os.remove(pm.cache_path)
+        finally:
+            pm.cache_path = ""; pm.save()
+            
+def cache_media(pm: PostMedia):
+    if pm.cache_path: return pm.cache_path
+    url = pm.source_url
+    if not url: return ""
+    cache_dir = settings.MEDIA_ROOT / "cache"
+    os.makedirs(cache_dir, exist_ok=True)
+    ext = os.path.splitext(url)[-1] or ".bin"
+    fname = (cache_dir / f"{pm.id}{ext}").as_posix()
+    with httpx.stream("GET", url, timeout=30) as r:
+        r.raise_for_status()
+        with open(fname, "wb") as f:
+            for chunk in r.iter_bytes(): f.write(chunk)
+    pm.cache_path = fname
+    pm.expires_at = timezone.now() + timedelta(days=int(os.getenv("MEDIA_CACHE_TTL_DAYS", 7)))
+    pm.save(); return fname
