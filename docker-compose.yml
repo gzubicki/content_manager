@@ -50,7 +50,9 @@ services:
     volumes:
       - .:/app
       - media:/var/app/media
-    command: celery -A content_manager worker -l info
+    command: celery -A content_manager worker -l info -c 2
+    environment:
+      CELERY_WORKER_PREFETCH_MULTIPLIER: "1"
     restart: unless-stopped
 
   beat:

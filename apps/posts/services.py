@@ -1,6 +1,6 @@
 import os, httpx, asyncio
-from tenacity import retry, wait_exponential_jitter, stop_after_attempt
-from openai import OpenAI
+from openai import OpenAI, RateLimitError, APIError, APIConnectionError, Timeout
+
 from datetime import timedelta
 from django.utils import timezone
 from django.conf import settings
@@ -8,6 +8,7 @@ from telegram import Bot
 from rapidfuzz import fuzz
 from .models import Post, PostMedia, Channel
 from dateutil import tz
+
 
 def _bot_for(channel: Channel):
     token = channel.bot_token or settings.TG_BOT_TOKEN
@@ -20,24 +21,34 @@ def _client():
         key = os.getenv("OPENAI_API_KEY", "")
         if not key:
             raise RuntimeError("Brak OPENAI_API_KEY – drafty wymagają GPT.")
-        _oai = OpenAI(api_key=key)
+        _oai = OpenAI(api_key=key, max_retries=0, timeout=30)
     return _oai
 
 def _channel_system_prompt(ch: Channel) -> str:
     return (ch.style_prompt or
             "Piszesz WYŁĄCZNIE po polsku. 1–3 akapity, ⚡️ lead, bez linków, stopka w 2 liniach.")
 
-@retry(wait=wait_exponential_jitter(1, 8), stop=stop_after_attempt(3))
-def gpt_generate_text(system_prompt: str, user_prompt: str) -> str:
-    cli = _client()
-    resp = cli.chat.completions.create(
-        model=os.getenv("OPENAI_MODEL", "gpt-4o"),
-        temperature=float(os.getenv("OPENAI_TEMPERATURE", 0.3)),
-        messages=[{"role":"system","content":system_prompt},{"role":"user","content":user_prompt}],
-    )
-    return resp.choices[0].message.content.strip()
 
-def gpt_new_draft(channel: Channel) -> str:
+def gpt_generate_text(system_prompt: str, user_prompt: str) -> str | None:
+    cli = _client()
+    try:
+        r = cli.chat.completions.create(
+            model=os.getenv("OPENAI_MODEL", "gpt-4o"),
+            temperature=float(os.getenv("OPENAI_TEMPERATURE", 0.3)),
+            messages=[{"role":"system","content":system_prompt},
+                      {"role":"user","content":user_prompt}],
+        )
+        return r.choices[0].message.content.strip()
+    except RateLimitError as e:
+        # twarde „insufficient_quota” – nie retry’ujemy, zwracamy None
+        if "insufficient_quota" in str(e):
+            return None
+        raise
+    except (APIError, APIConnectionError, Timeout):
+        # pozwól Celery autoretry
+        raise
+
+def gpt_new_draft(channel: Channel) -> str | None:
     sys = _channel_system_prompt(channel)
     usr = ("Wygeneruj JEDEN gotowy wpis zgodnie z zasadami. "
            "Zawrzyj stopkę identyczną jak w kanale. Nie dodawaj linków.")

@@ -4,6 +4,8 @@ from telegram import InputMediaPhoto, InputMediaVideo
 from .models import Post, Channel
 from . import services
 import asyncio
+from openai import RateLimitError, APIError, APIConnectionError, Timeout
+
 
 @shared_task
 def task_ensure_min_drafts():
@@ -56,12 +58,18 @@ def publish_post(post_id: int):
     post.save()
     return {"group": sent_group_ids, "text": msg_id}
 
-@shared_task
-def task_gpt_generate_for_channel(channel_id: int, count: int = 1):
+@shared_task(bind=True,
+             autoretry_for=(APIError, APIConnectionError, Timeout, RateLimitError),
+             retry_backoff=True, retry_jitter=True,
+             retry_kwargs={"max_retries": 6})
+def task_gpt_generate_for_channel(self, channel_id: int, count: int = 1):
     ch = Channel.objects.get(id=channel_id)
     added = 0
     for _ in range(count):
         text = services.gpt_new_draft(ch)
+        if text is None:
+            # np. insufficient_quota – przerwij grzecznie, bez wyjątku
+            break
         Post.objects.create(channel=ch, text=text, status="DRAFT", origin="gpt")
         added += 1
     return added
@@ -73,3 +81,14 @@ def task_gpt_rewrite_post(post_id: int, editor_prompt: str):
     p.text = new_text
     p.save()
     return p.id
+
+@shared_task(bind=True, rate_limit="1/s",
+             autoretry_for=(APIError, APIConnectionError, Timeout, RateLimitError),
+             retry_backoff=True, retry_jitter=True, retry_kwargs={"max_retries": 5})
+def task_gpt_generate_one(self, channel_id: int):
+    ch = Channel.objects.get(id=channel_id)
+    text = services.gpt_new_draft(ch)
+    if text is None:  # np. brak środków
+        return 0
+    Post.objects.create(channel=ch, text=text, status="DRAFT", origin="gpt")
+    return 1

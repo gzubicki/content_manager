@@ -1,10 +1,12 @@
 from django.contrib import admin, messages
+from django.contrib.admin.helpers import ActionForm as AdminActionForm
 from django import forms
 from .models import Post, PostMedia, Channel
-from django.contrib.admin.helpers import ActionForm as AdminActionForm
-from .validators import validate_post_text_for_channel
 from . import services
-from .tasks import task_gpt_generate_for_channel, task_gpt_rewrite_post
+from .validators import validate_post_text_for_channel
+from .tasks import task_gpt_generate_one, task_gpt_rewrite_post, task_gpt_generate_for_channel
+
+
 
 class PostActionForm(AdminActionForm):
     prompt = forms.CharField(label="Prompt korekty (opcjonalny)", required=False)
@@ -29,10 +31,20 @@ class ChannelAdmin(admin.ModelAdmin):
 
     @admin.action(description="Uzupełnij do 20 (zaznaczone kanały)")
     def act_fill_to_20(self, request, queryset):
-        total = 0
+        queued = 0
         for ch in queryset:
-            total += services.ensure_min_drafts(ch)
-        self.message_user(request, f"Dodano {total} draftów")
+            need = ch.draft_target_count - ch.posts.filter(status="DRAFT").count()
+            for i in range(max(0, need)):
+                task_gpt_generate_one.apply_async(args=[ch.id], countdown=i*2)
+            if need > 0:
+                task_gpt_generate_for_channel.delay(ch.id, need)
+                queued += need
+        self.message_user(
+            request,
+            ("Zlecono wygenerowanie %d draftów (GPT) w tle." % queued) if queued
+            else "Zaznaczone kanały mają już komplet draftów.",
+            level=messages.INFO if queued else messages.WARNING,
+        )
 
     @admin.action(description="GPT: wygeneruj 20 draftów (async)")
     def act_gpt_generate_20(self, request, queryset):
@@ -52,13 +64,23 @@ class PostAdmin(admin.ModelAdmin):
 
     def short(self, obj): return obj.text[:80] + ("…" if len(obj.text)>80 else "")
 
-    @admin.action(description="Uzupełnij do 20 (bieżący kanał)")
+    @admin.action(description="Uzupełnij do 20 (bieżący kanał / wszystkie jeśli brak selekcji)")
     def act_fill_to_20(self, request, qs):
         channels = {p.channel for p in qs} or set(Channel.objects.all())
-        added = 0
+        queued = 0
         for ch in channels:
-            added += services.ensure_min_drafts(ch)
-        self.message_user(request, f"Dodano {added} draftów")
+            need = ch.draft_target_count - ch.posts.filter(status="DRAFT").count()
+            for i in range(max(0, need)):
+                task_gpt_generate_one.apply_async(args=[ch.id], countdown=i*2)
+            if need > 0:
+                task_gpt_generate_for_channel.delay(ch.id, need)
+                queued += need
+        self.message_user(
+            request,
+            ("Zlecono wygenerowanie %d draftów (GPT) w tle." % queued) if queued
+            else "Kanały mają już komplet draftów.",
+            level=messages.INFO if queued else messages.WARNING,
+        )
 
     @admin.action(description="Zatwierdź i nadaj slot AUTO")
     def act_approve(self, request, qs):
