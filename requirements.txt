@@ -16,3 +16,5 @@ openai>=1.43.0
 dj-database-url>=2.2.0
 openai>=1.43.0
 tenacity>=8.3.0
+#production
+gunicorn>=21.2
