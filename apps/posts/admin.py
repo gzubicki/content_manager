@@ -4,7 +4,7 @@ from django import forms
 from .models import Post, PostMedia, Channel, DraftPost, ScheduledPost
 from . import services
 from .validators import validate_post_text_for_channel
-from .tasks import task_gpt_generate_one, task_gpt_rewrite_post, task_gpt_generate_for_channel
+from .tasks import task_gpt_rewrite_post, task_gpt_generate_for_channel
 
 
 
@@ -34,8 +34,6 @@ class ChannelAdmin(admin.ModelAdmin):
         queued = 0
         for ch in queryset:
             need = ch.draft_target_count - ch.posts.filter(status="DRAFT").count()
-            for i in range(max(0, need)):
-                task_gpt_generate_one.apply_async(args=[ch.id], countdown=i*2)
             if need > 0:
                 task_gpt_generate_for_channel.delay(ch.id, need)
                 queued += need
@@ -77,8 +75,6 @@ class BasePostAdmin(admin.ModelAdmin):
         queued = 0
         for ch in channels:
             need = ch.draft_target_count - ch.posts.filter(status="DRAFT").count()
-            for i in range(max(0, need)):
-                task_gpt_generate_one.apply_async(args=[ch.id], countdown=i*2)
             if need > 0:
                 task_gpt_generate_for_channel.delay(ch.id, need)
                 queued += need
