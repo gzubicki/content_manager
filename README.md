@@ -15,6 +15,22 @@ docker compose restart worker beat
 
 
 
+## Tworzenie superadmina
+
+Aby dodać nowego superadministratora w środowisku dockerowym:
+
+1. Upewnij się, że kontenery są uruchomione (`docker compose up -d`).
+2. Uruchom polecenie:
+
+   ```bash
+   docker compose exec web python manage.py createsuperuser
+   ```
+
+3. Podaj wymagane dane (adres e-mail, hasło itp.) w interaktywnym kreatorze.
+
+Po zakończeniu logowanie do panelu administracyjnego będzie możliwe pod [http://localhost:8000/admin/](http://localhost:8000/admin/).
+
+
 ## ENV (wymagane)
 - `DATABASE_URL=postgres://app:pass@db:5432/app`
 - `REDIS_URL=redis://redis:6379/0`

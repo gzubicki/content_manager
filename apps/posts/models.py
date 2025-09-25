@@ -59,6 +59,21 @@ class Post(models.Model):
             self.expires_at = timezone.now() + timezone.timedelta(days=ttl)
         super().save(*a, **kw)
 
+
+class DraftPost(Post):
+    class Meta:
+        proxy = True
+        verbose_name = "Draft"
+        verbose_name_plural = "Drafty"
+
+
+class ScheduledPost(Post):
+    class Meta:
+        proxy = True
+        verbose_name = "Pozycja harmonogramu"
+        verbose_name_plural = "Harmonogram"
+
+
 class PostMedia(models.Model):
     TYPE = [(t,t) for t in ["photo","video","doc"]]
     post = models.ForeignKey(Post, verbose_name="Wpis", related_name="media", on_delete=models.CASCADE)

@@ -1,0 +1,55 @@
+services:
+  db:
+    image: postgres:16
+    environment:
+      POSTGRES_DB: app
+      POSTGRES_USER: app
+      POSTGRES_PASSWORD: pass
+      TZ: Europe/Warsaw
+    volumes: [ "pgdata:/var/lib/postgresql/data" ]
+    healthcheck:
+      test: ["CMD-SHELL","pg_isready -U app -d app"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server","--save","","--appendonly","no"]
+    healthcheck:
+      test: ["CMD","redis-cli","ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  app: &app
+    image: ${IMAGE}    # podawane przez GH Action/SSH
+    env_file: .env.production
+    depends_on:
+      db: { condition: service_healthy }
+      redis: { condition: service_healthy }
+    volumes:
+      - media:/var/app/media
+
+  web:
+    <<: *app
+    command: gunicorn content_manager.wsgi:application -b 0.0.0.0:8000 -w 3 --timeout 120
+    ports: [ "127.0.0.1:8000:8000" ]  # reverse-proxy nginx na hoście
+
+  worker:
+    <<: *app
+    command: celery -A content_manager worker -l info -c 2
+    environment:
+      CELERY_WORKER_PREFETCH_MULTIPLIER: "1"
+
+  beat:
+    <<: *app
+    command: celery -A content_manager beat -l info -s /var/run/celery/celerybeat-schedule
+    volumes:
+      - media:/var/app/media
+      - celerybeat:/var/run/celery
+
+volumes:
+  pgdata:
+  media:
+  celerybeat:
