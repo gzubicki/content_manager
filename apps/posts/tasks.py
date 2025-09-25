@@ -14,7 +14,6 @@ def task_ensure_min_drafts():
 
 @shared_task
 def task_housekeeping():
-    from .models import PostMedia
     Post.objects.filter(status="DRAFT", expires_at__lt=timezone.now()).delete()
     services.purge_cache()
 
@@ -54,6 +53,7 @@ def publish_post(post_id: int):
     post = Post.objects.select_related("channel").get(id=post_id)
     sent_group_ids, msg_id = asyncio.run(_publish_async(post))
     post.message_id = msg_id
+    post.dupe_score = services.compute_dupe(post)
     post.status = "PUBLISHED"
     post.save()
     return {"group": sent_group_ids, "text": msg_id}

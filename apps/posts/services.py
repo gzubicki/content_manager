@@ -1,4 +1,4 @@
-import os, httpx, asyncio
+import os, httpx
 from openai import OpenAI, RateLimitError, APIError, APIConnectionError, Timeout
 
 from datetime import timedelta
@@ -66,6 +66,8 @@ def ensure_min_drafts(channel: Channel):
     created = 0
     for _ in range(max(0, need)):
         text = gpt_new_draft(channel)
+        if text is None:
+            break
         Post.objects.create(channel=channel, text=text, status="DRAFT", origin="gpt")
         created += 1
     return created
@@ -78,24 +80,40 @@ def compute_dupe(post: Post) -> float:
 def next_auto_slot(channel: Channel, dt=None):
     tz_waw = tz.gettz("Europe/Warsaw")
     now = timezone.now().astimezone(tz_waw) if dt is None else dt.astimezone(tz_waw)
-    step = channel.slot_step_min
+    step = max(channel.slot_step_min, 1)
     start = now.replace(hour=channel.slot_start_hour, minute=0, second=0, microsecond=0)
     end = now.replace(hour=channel.slot_end_hour, minute=channel.slot_end_minute, second=0, microsecond=0)
-    minute = 0 if now.minute <= 0 else (30 if now.minute <= 30 else 60)
-    base = now.replace(minute=0, second=0, microsecond=0)
-    candidate = base if now.minute == 0 else base + timezone.timedelta(minutes=minute)
-    if candidate < start: candidate = start
-    if candidate > end: candidate = start + timezone.timedelta(days=1)
-    used = set(channel.posts.filter(status__in=["APPROVED","SCHEDULED"]).values_list("scheduled_at", flat=True))
-    while candidate in used:
+
+    minute_block = (now.minute // step) * step
+    candidate = now.replace(minute=minute_block, second=0, microsecond=0)
+    if now.minute % step != 0 or now.second or now.microsecond:
         candidate += timezone.timedelta(minutes=step)
-        if candidate.time() > end.time():
+
+    if candidate < start:
+        candidate = start
+    if candidate > end:
+        candidate = start + timezone.timedelta(days=1)
+
+    used_slots = {
+        timezone.localtime(dt, tz_waw)
+        for dt in channel.posts.filter(
+            status__in=["APPROVED", "SCHEDULED"],
+            scheduled_at__isnull=False
+        ).values_list("scheduled_at", flat=True)
+    }
+    safety_counter = 0
+    while candidate in used_slots:
+        candidate += timezone.timedelta(minutes=step)
+        safety_counter += 1
+        if candidate.time() > end.time() or safety_counter > (24 * 60 // step) + 1:
             candidate = start + timezone.timedelta(days=1)
+            safety_counter = 0
     return candidate
 
 def assign_auto_slot(post: Post):
     if post.schedule_mode == "MANUAL": return
     post.scheduled_at = next_auto_slot(post.channel)
+    post.dupe_score = compute_dupe(post)
     post.status = "SCHEDULED"
     post.save()
 
