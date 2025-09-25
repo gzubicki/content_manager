@@ -23,7 +23,7 @@
     });
   }
 
-  function renderMediaItem(item, isLarge){
+  function renderMediaItem(item){
     const type = item.type || "photo";
     const src = escapeAttr(item.src || "");
     if (!src){
@@ -36,8 +36,7 @@
       const name = escapeHtml(item.name || item.src || "Dokument");
       return `<div class="tg-doc"><span class="tg-doc__icon">📎</span><span class="tg-doc__name">${name}</span></div>`;
     }
-    const cls = isLarge ? " class=\"large\"" : "";
-    return `<img src="${src}" alt=""${cls}>`;
+    return `<img src="${src}" alt="">`;
   }
 
   function buildMediaHtml(media){
@@ -45,13 +44,11 @@
       return "";
     }
     if (media.length === 1){
-      return `<div class="tg-media">${renderMediaItem(media[0], false)}</div>`;
+      return `<div class="tg-media">${renderMediaItem(media[0])}</div>`;
     }
-    if (media.length === 2){
-      return `<div class="tg-album two">${media.map(item => `<div class="tg-album__item">${renderMediaItem(item, false)}</div>`).join("")}</div>`;
-    }
-    const [first, ...rest] = media;
-    return `<div class="tg-album many"><div class="tg-album__item large">${renderMediaItem(first, true)}</div>${rest.map(item => `<div class="tg-album__item">${renderMediaItem(item, false)}</div>`).join("")}</div>`;
+    const cols = media.length <= 4 ? 2 : (media.length <= 9 ? 3 : 4);
+    const items = media.map(item => `<div class="tg-album__item">${renderMediaItem(item)}</div>`).join("");
+    return `<div class="tg-album grid cols-${cols}">${items}</div>`;
   }
 
   document.addEventListener("DOMContentLoaded", function(){

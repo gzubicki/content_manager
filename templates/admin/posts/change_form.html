@@ -1,5 +1,5 @@
 {% extends "admin/base_site.html" %}
-{% load i18n admin_urls static admin_modify json_script %}
+{% load i18n admin_urls static admin_modify %}
 
 {% block title %}{% if errors %}{% translate "Error:" %} {% endif %}{{ block.super }}{% endblock %}
 
@@ -99,7 +99,7 @@
       <div class="post-edit__preview-body" data-post-preview-card>
         {% include "admin/posts/includes/change_preview_card.html" with preview=preview %}
       </div>
-      {{ preview.media|json_script:"post-preview-initial-media" }}
+      <script type="application/json" id="post-preview-initial-media">{{ preview_media_json|default:"[]"|safe }}</script>
     </aside>
   </div>
 {% endblock %}

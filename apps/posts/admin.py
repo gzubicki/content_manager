@@ -1,3 +1,4 @@
+import json
 import os
 from pathlib import Path
 from uuid import uuid4
@@ -9,6 +10,7 @@ from django.contrib.admin import helpers
 from django.contrib.admin.helpers import ActionForm as AdminActionForm
 from django.contrib.admin.widgets import AdminSplitDateTime
 from django.core.exceptions import PermissionDenied
+from django.core.serializers.json import DjangoJSONEncoder
 from django.core.files.storage import default_storage
 from django.shortcuts import get_object_or_404, redirect
 from django.template.response import TemplateResponse
@@ -254,6 +256,14 @@ class BasePostAdmin(admin.ModelAdmin):
         choices = dict(field.choices or [])
         return choices.get(value, value)
 
+    def _serialize_media(self, media: list[dict]) -> str:
+        data = json.dumps(media, cls=DjangoJSONEncoder)
+        return (
+            data.replace("</", "\\u003C/")
+            .replace("\u2028", "\\u2028")
+            .replace("\u2029", "\\u2029")
+        )
+
     def _build_preview_context(self, request, context, obj: Post | None) -> dict:
         adminform = context.get("adminform")
         form = getattr(adminform, "form", None)
@@ -304,6 +314,8 @@ class BasePostAdmin(admin.ModelAdmin):
 
         preview_media = self._build_preview_media(obj) if obj else []
 
+        media_json = self._serialize_media(preview_media)
+
         return {
             "id": obj.pk if obj else None,
             "channel_name": str(channel) if channel else "(wybierz kanał)",
@@ -317,11 +329,13 @@ class BasePostAdmin(admin.ModelAdmin):
             "dupe_score_display": dupe_display or "–",
             "text": text_value,
             "media": preview_media,
+            "media_json": media_json,
         }
 
     def render_change_form(self, request, context, add=False, change=False, form_url="", obj=None):
         preview = self._build_preview_context(request, context, obj)
         context["preview"] = preview
+        context["preview_media_json"] = preview.get("media_json", "[]")
         return super().render_change_form(request, context, add=add, change=change, form_url=form_url, obj=obj)
 
     def changelist_view(self, request, extra_context=None):
@@ -386,7 +400,7 @@ class BasePostAdmin(admin.ModelAdmin):
             **self.admin_site.each_context(request),
             "opts": self.model._meta,
             "original": post,
-            "title": "Przełóż publikację",
+            "title": "Zmień termin publikacji",
             "form": form,
             "media": form.media,
             "changelist_url": reverse(f"admin:{self.model._meta.app_label}_{self.model._meta.model_name}_changelist"),

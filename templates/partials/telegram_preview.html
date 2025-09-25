@@ -5,25 +5,36 @@
         <div class="tg-media">
           {% include "partials/telegram_media_item.html" with item=media.0 %}
         </div>
-      {% elif count == 2 %}
-        <div class="tg-album two">
-          {% for item in media %}
-            <div class="tg-album__item">
-              {% include "partials/telegram_media_item.html" with item=item %}
-            </div>
-          {% endfor %}
-        </div>
-      {% else %}
-        <div class="tg-album many">
-          <div class="tg-album__item large">
-            {% include "partials/telegram_media_item.html" with item=media.0 classes="large" %}
+      {% elif count <= 4 %}
+        {% with cols='2' %}
+          <div class="tg-album grid cols-{{ cols }}">
+            {% for item in media %}
+              <div class="tg-album__item">
+                {% include "partials/telegram_media_item.html" with item=item %}
+              </div>
+            {% endfor %}
           </div>
-          {% for item in media|slice:"1:" %}
-            <div class="tg-album__item">
-              {% include "partials/telegram_media_item.html" with item=item %}
-            </div>
-          {% endfor %}
-        </div>
+        {% endwith %}
+      {% elif count <= 9 %}
+        {% with cols='3' %}
+          <div class="tg-album grid cols-{{ cols }}">
+            {% for item in media %}
+              <div class="tg-album__item">
+                {% include "partials/telegram_media_item.html" with item=item %}
+              </div>
+            {% endfor %}
+          </div>
+        {% endwith %}
+      {% else %}
+        {% with cols='4' %}
+          <div class="tg-album grid cols-{{ cols }}">
+            {% for item in media %}
+              <div class="tg-album__item">
+                {% include "partials/telegram_media_item.html" with item=item %}
+              </div>
+            {% endfor %}
+          </div>
+        {% endwith %}
       {% endif %}
     {% endwith %}
   {% endif %}
