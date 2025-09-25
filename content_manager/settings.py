@@ -11,12 +11,21 @@ ALLOWED_HOSTS = os.getenv("ALLOWED_HOSTS", "*").split(",")
 TIME_ZONE = os.getenv("TIME_ZONE", "Europe/Warsaw")
 USE_TZ = True
 
+SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
+
+# produkcja:
+SESSION_COOKIE_SECURE = True
+CSRF_COOKIE_SECURE = True
+
+
 INSTALLED_APPS = [
     "jazzmin",
     "django.contrib.admin", "django.contrib.auth", "django.contrib.contenttypes",
     "django.contrib.sessions", "django.contrib.messages", "django.contrib.staticfiles",
     "apps.posts", "apps.accounts",
 ]
+
+DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
 MIDDLEWARE = [
     "django.middleware.security.SecurityMiddleware",

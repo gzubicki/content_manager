@@ -1,0 +1,33 @@
+{% extends "admin/base_site.html" %}
+{% load i18n %}
+
+{% block extrahead %}
+  {{ block.super }}
+  {{ media }}
+{% endblock %}
+
+{% block content %}
+  <div id="content" class="content">
+    <h1>{{ title }}</h1>
+    <div id="content-main">
+      <form method="post" novalidate>
+        {% csrf_token %}
+        <fieldset class="module aligned">
+          <div class="form-row field-prompt">
+            {{ form.prompt.errors }}
+            <label for="{{ form.prompt.id_for_label }}">{{ form.prompt.label }}:</label>
+            {{ form.prompt }}
+            {% if form.prompt.help_text %}<p class="help">{{ form.prompt.help_text }}</p>{% endif %}
+            {% if default_prompt %}
+              <p class="help">Domyślny prompt: <code>{{ default_prompt }}</code></p>
+            {% endif %}
+          </div>
+        </fieldset>
+        <div class="submit-row">
+          <a class="button cancel-link" href="{{ changelist_url }}">Anuluj</a>
+          <button type="submit" class="default">Wyślij do korekty</button>
+        </div>
+      </form>
+    </div>
+  </div>
+{% endblock %}
