@@ -1,0 +1,36 @@
+{% extends "admin/base_site.html" %}
+{% load i18n %}
+
+{% block extrahead %}
+  {{ block.super }}
+  {{ media }}
+{% endblock %}
+
+{% block content %}
+  <div id="content" class="content">
+    <h1>{{ title }}</h1>
+    <div id="content-main">
+      <form method="post" novalidate>
+        {% csrf_token %}
+        <fieldset class="module aligned">
+          <div class="form-row field-schedule_mode">
+            {{ form.schedule_mode.errors }}
+            <label for="{{ form.schedule_mode.id_for_label }}">{{ form.schedule_mode.label }}:</label>
+            {{ form.schedule_mode }}
+            {% if form.schedule_mode.help_text %}<p class="help">{{ form.schedule_mode.help_text }}</p>{% endif %}
+          </div>
+          <div class="form-row field-scheduled_at">
+            {{ form.scheduled_at.errors }}
+            <label for="{{ form.scheduled_at.id_for_label }}">{{ form.scheduled_at.label }}:</label>
+            {{ form.scheduled_at }}
+            {% if form.scheduled_at.help_text %}<p class="help">{{ form.scheduled_at.help_text }}</p>{% endif %}
+          </div>
+        </fieldset>
+        <div class="submit-row">
+          <a class="button cancel-link" href="{{ changelist_url }}">Anuluj</a>
+          <button type="submit" class="default">Zapisz zmiany</button>
+        </div>
+      </form>
+    </div>
+  </div>
+{% endblock %}

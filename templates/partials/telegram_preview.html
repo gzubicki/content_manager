@@ -1,15 +1,42 @@
-<div class="tg-wrap" style="--w:360px" data-theme="dark">
-  {% if media and media|length == 1 %}
-    <div class="tg-media"><img src="{{ media.0 }}" alt=""></div>
-  {% elif media and media|length == 2 %}
-    <div class="tg-album two">
-      {% for m in media %}<img src="{{ m }}" alt="">{% endfor %}
-    </div>
-  {% elif media and media|length > 2 %}
-    <div class="tg-album many">
-      <img class="large" src="{{ media.0 }}" alt="">
-      {% for m in media|slice:"1:" %}<img src="{{ m }}" alt="">{% endfor %}
-    </div>
+<div class="tg-wrap" style="--w:{{ width|default:'360px' }}" data-theme="{{ theme|default:'dark' }}">
+  {% if media %}
+    {% with media|length as count %}
+      {% if count == 1 %}
+        <div class="tg-media">
+          {% include "partials/telegram_media_item.html" with item=media.0 %}
+        </div>
+      {% elif count <= 4 %}
+        {% with cols='2' %}
+          <div class="tg-album grid cols-{{ cols }}">
+            {% for item in media %}
+              <div class="tg-album__item">
+                {% include "partials/telegram_media_item.html" with item=item %}
+              </div>
+            {% endfor %}
+          </div>
+        {% endwith %}
+      {% elif count <= 9 %}
+        {% with cols='3' %}
+          <div class="tg-album grid cols-{{ cols }}">
+            {% for item in media %}
+              <div class="tg-album__item">
+                {% include "partials/telegram_media_item.html" with item=item %}
+              </div>
+            {% endfor %}
+          </div>
+        {% endwith %}
+      {% else %}
+        {% with cols='4' %}
+          <div class="tg-album grid cols-{{ cols }}">
+            {% for item in media %}
+              <div class="tg-album__item">
+                {% include "partials/telegram_media_item.html" with item=item %}
+              </div>
+            {% endfor %}
+          </div>
+        {% endwith %}
+      {% endif %}
+    {% endwith %}
   {% endif %}
   <div class="tg-text">{{ text }}</div>
 </div>

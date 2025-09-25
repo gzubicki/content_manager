@@ -1,0 +1,24 @@
+{% extends "admin/change_list.html" %}
+{% load static admin_list %}
+
+{% block extrastyle %}
+  {{ block.super }}
+  <link rel="stylesheet" href="{% static 'admin/post_cards.css' %}">
+{% endblock %}
+
+{% block result_list %}
+  {% if action_form and actions_on_top and cl.show_admin_actions %}{% admin_actions %}{% endif %}
+  <div class="results">
+    {% if cl.formset %}
+      {{ cl.formset.management_form }}
+    {% endif %}
+    <div class="post-card-grid">
+      {% for post in cl.result_list %}
+        {% include "admin/posts/includes/post_card.html" with post=post action_checkbox_name=action_checkbox_name cl=cl %}
+      {% empty %}
+        <p>Brak wpisów do wyświetlenia.</p>
+      {% endfor %}
+    </div>
+  </div>
+  {% if action_form and actions_on_bottom and cl.show_admin_actions %}{% admin_actions %}{% endif %}
+{% endblock %}

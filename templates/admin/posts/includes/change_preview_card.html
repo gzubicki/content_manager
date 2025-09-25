@@ -1,0 +1,42 @@
+{% load tz %}
+{% with preview=preview %}
+{% localtime on %}
+<article class="post-card post-card--preview" data-status="{{ preview.status|default:'DRAFT' }}" data-preview-card-root>
+  <div class="post-card__head">
+    <div class="post-card__channel">
+      <span data-preview-channel>{{ preview.channel_name }}</span>
+      <span class="post-card__status">
+        <span class="post-card__status-badge" data-preview-status-label>{{ preview.status_display }}</span>
+        <span data-preview-schedule-mode>{{ preview.schedule_mode_display }}</span>
+      </span>
+    </div>
+    <div class="post-card__status" data-preview-timing>
+      {% if preview.scheduled_at_display %}
+        <strong>Publikacja:</strong>
+        <time data-preview-scheduled>{{ preview.scheduled_at_display }}</time>
+      {% elif preview.expires_at_display %}
+        <strong>Wygasa:</strong>
+        <time data-preview-expires>{{ preview.expires_at_display }}</time>
+      {% else %}
+        <strong>Publikacja:</strong> <span data-preview-scheduled>–</span>
+      {% endif %}
+    </div>
+  </div>
+  <div class="post-card__preview">
+    <div data-preview-body>
+      {% include "partials/telegram_preview.html" with text=preview.text media=preview.media width='100%' theme='dark' %}
+    </div>
+  </div>
+  <div class="post-card__meta">
+    <div>
+      <strong>ID:</strong> <span data-preview-id>{{ preview.id|default:'—' }}</span>
+      • <strong>Duplikat:</strong> <span data-preview-dupe>{{ preview.dupe_score_display }}</span>
+    </div>
+    <div><strong>Utworzono:</strong> <span data-preview-created>{{ preview.created_at_display|default:'—' }}</span></div>
+  </div>
+  <div class="post-card__footer">
+    <span class="post-card__hint">Podgląd na żywo – zmiany tekstu, statusu i mediów aktualizują się automatycznie.</span>
+  </div>
+</article>
+{% endlocaltime %}
+{% endwith %}

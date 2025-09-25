@@ -1,0 +1,57 @@
+{% load admin_urls tz %}
+{% localtime on %}
+<article class="post-card" data-status="{{ post.status }}">
+  <div class="post-card__head">
+    <div class="post-card__channel">
+      <span>{{ post.channel }}</span>
+      <span class="post-card__status">
+        <span class="post-card__status-badge">{{ post.get_status_display }}</span>
+        {% if post.schedule_mode %}
+          <span>{{ post.get_schedule_mode_display }}</span>
+        {% endif %}
+      </span>
+    </div>
+    {% if post.scheduled_at %}
+      <div class="post-card__status">
+        <strong>Publikacja:</strong>
+        <time datetime="{{ post.scheduled_at|date:'c' }}">{{ post.scheduled_at|date:"d.m.Y H:i" }}</time>
+      </div>
+    {% elif post.expires_at %}
+      <div class="post-card__status">
+        <strong>Wygasa:</strong>
+        <time datetime="{{ post.expires_at|date:'c' }}">{{ post.expires_at|date:"d.m.Y H:i" }}</time>
+      </div>
+    {% endif %}
+  </div>
+  <div class="post-card__preview">
+    {% include "partials/telegram_preview.html" with text=post.text media=post.preview_media width='100%' %}
+  </div>
+  <div class="post-card__meta">
+    <div>
+      <strong>ID:</strong> {{ post.pk }} • <strong>Duplikat:</strong>
+      {% if post.dupe_score is not None %}
+        {{ post.dupe_score|floatformat:2 }}
+      {% else %}
+        –
+      {% endif %}
+    </div>
+    <div><strong>Utworzono:</strong> <time datetime="{{ post.created_at|date:'c' }}">{{ post.created_at|date:"d.m.Y H:i" }}</time></div>
+    {% if post.approved_by %}
+      <div><strong>Zatwierdził:</strong> {{ post.approved_by }}</div>
+    {% endif %}
+  </div>
+  <div class="post-card__footer">
+    <div class="post-card__actions">
+      <a href="{{ post.change_url }}" class="post-card__action--primary">Edytuj</a>
+      <a href="{{ post.reschedule_url }}" class="post-card__action--secondary">Zmień termin publikacji</a>
+      <a href="{{ post.delete_url }}" class="post-card__action--danger">Usuń</a>
+    </div>
+    {% if action_checkbox_name and cl.show_admin_actions %}
+    <label class="post-card__selection">
+      <input type="checkbox" class="action-select" name="{{ action_checkbox_name }}" value="{{ post.pk }}">
+      <span>Do akcji</span>
+    </label>
+    {% endif %}
+  </div>
+</article>
+{% endlocaltime %}
