@@ -1,4 +1,4 @@
-<div class="tg-wrap" style="--w:360px" data-theme="dark">
+<div class="tg-wrap" style="--w:{{ width|default:'360px' }}" data-theme="{{ theme|default:'dark' }}">
   {% if media and media|length == 1 %}
     <div class="tg-media"><img src="{{ media.0 }}" alt=""></div>
   {% elif media and media|length == 2 %}
