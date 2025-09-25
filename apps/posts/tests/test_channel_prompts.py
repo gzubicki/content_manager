@@ -35,12 +35,11 @@ class ChannelPromptPropagationTest(TestCase):
         self.assertIn("linia2", system_prompt)
         self.assertIn("Nie dodawaj linków", system_prompt)
 
-        self.assertIn("Stosuj się do następujących wytycznych kanału", user_prompt)
-        self.assertIn("maksymalnie 321 znaków", user_prompt)
-        self.assertIn("Liczba emoji", user_prompt)
-        self.assertIn("linia1", user_prompt)
-        self.assertIn("linia2", user_prompt)
-        self.assertIn("Nie dodawaj linków", user_prompt)
+        self.assertIn("limicie znaków", user_prompt)
+        self.assertIn("emoji, stopki i zakazów", user_prompt)
+        self.assertNotIn("linia1", user_prompt)
+        self.assertNotIn("linia2", user_prompt)
+        self.assertNotIn("Nie dodawaj linków", user_prompt)
 
     def test_rewrite_text_uses_same_channel_rules(self):
         with patch("apps.posts.services.gpt_generate_text") as mock_gpt:
@@ -53,9 +52,8 @@ class ChannelPromptPropagationTest(TestCase):
         self.assertIn("linia2", system_prompt)
         self.assertIn("Nie dodawaj linków", system_prompt)
 
-        self.assertIn("Wytyczne kanału", user_prompt)
-        self.assertIn("maksymalnie 321 znaków", user_prompt)
-        self.assertIn("Liczba emoji", user_prompt)
-        self.assertIn("linia1", user_prompt)
-        self.assertIn("linia2", user_prompt)
-        self.assertIn("Nie dodawaj linków", user_prompt)
+        self.assertIn("Zachowaj charakter kanału", user_prompt)
+        self.assertIn("długości, emoji oraz stopki", user_prompt)
+        self.assertNotIn("linia1", user_prompt)
+        self.assertNotIn("linia2", user_prompt)
+        self.assertNotIn("Nie dodawaj linków", user_prompt)

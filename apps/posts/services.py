@@ -222,10 +222,13 @@ def gpt_generate_post_payload(channel: Channel, article: dict[str, Any] | None =
         "do tematu (np. myśliwiec F-16 dla wiadomości o rakietach).",
         "Dla wideo/dokumentów zawsze podawaj pełny url.",
     ]
-    channel_rules = _channel_constraints_prompt(channel).strip()
-    if channel_rules:
-        instructions.append("Stosuj się do następujących wytycznych kanału:")
-        instructions.append(channel_rules)
+    if channel.max_chars:
+        instructions.append(
+            "Długość odpowiedzi musi mieścić się w limicie znaków opisanym w systemowym promptcie."
+        )
+    instructions.append(
+        "Uwzględnij wymagania dotyczące emoji, stopki i zakazów opisane w systemowym promptcie."
+    )
     if article_context:
         instructions.append("Korzystaj z poniższych danych artykułu:")
         instructions.append(article_context)
@@ -241,12 +244,10 @@ def gpt_generate_post_payload(channel: Channel, article: dict[str, Any] | None =
 
 def gpt_rewrite_text(channel: Channel, text: str, editor_prompt: str) -> str:
     sys = _channel_system_prompt(channel)
-    channel_rules = _channel_constraints_prompt(channel).strip()
-    extra_rules = f"\n\nWytyczne kanału:\n{channel_rules}" if channel_rules else ""
     usr = (
         "Przepisz poniższy tekst zgodnie z zasadami i wytycznymi edytora. "
-        "Zachowaj charakter kanału, wymagania dotyczące długości, emoji oraz stopki."
-        f"{extra_rules}\n\n[Wytyczne edytora]: {editor_prompt}\n\n[Tekst]:\n{text}"
+        "Zachowaj charakter kanału, wymagania dotyczące długości, emoji oraz stopki opisane w systemowym promptcie."
+        f"\n\n[Wytyczne edytora]: {editor_prompt}\n\n[Tekst]:\n{text}"
     )
     return gpt_generate_text(sys, usr)
 
