@@ -12,6 +12,7 @@ TIME_ZONE = os.getenv("TIME_ZONE", "Europe/Warsaw")
 USE_TZ = True
 
 SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
+SESSION_ENGINE = django.contrib.sessions.backends.db
 
 # produkcja:
 SESSION_COOKIE_SECURE = True
