@@ -111,11 +111,11 @@ def task_gpt_generate_for_channel(self, channel_id: int, count: int = 1):
     ch = Channel.objects.get(id=channel_id)
     added = 0
     for _ in range(count):
-        text = services.gpt_new_draft(ch)
-        if text is None:
+        payload = services.gpt_new_draft(ch)
+        if payload is None:
             # np. insufficient_quota – przerwij grzecznie, bez wyjątku
             break
-        Post.objects.create(channel=ch, text=text, status="DRAFT", origin="gpt")
+        services.create_post_from_payload(ch, payload)
         added += 1
     return added
 
@@ -132,8 +132,8 @@ def task_gpt_rewrite_post(post_id: int, editor_prompt: str):
              retry_backoff=True, retry_jitter=True, retry_kwargs={"max_retries": 5})
 def task_gpt_generate_one(self, channel_id: int):
     ch = Channel.objects.get(id=channel_id)
-    text = services.gpt_new_draft(ch)
-    if text is None:  # np. brak środków
+    payload = services.gpt_new_draft(ch)
+    if payload is None:  # np. brak środków
         return 0
-    Post.objects.create(channel=ch, text=text, status="DRAFT", origin="gpt")
+    services.create_post_from_payload(ch, payload)
     return 1

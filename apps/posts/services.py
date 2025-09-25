@@ -1,5 +1,9 @@
+import base64
+import json
+import logging
 import os
 import shutil
+import textwrap
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -13,6 +17,10 @@ from telegram import Bot
 from rapidfuzz import fuzz
 from .models import Post, PostMedia, Channel
 from dateutil import tz
+from typing import Any
+
+
+logger = logging.getLogger(__name__)
 
 
 def _bot_for(channel: Channel):
@@ -36,15 +44,114 @@ def _channel_system_prompt(ch: Channel) -> str:
             "Piszesz WYŁĄCZNIE po polsku. 1–3 akapity, ⚡️ lead, bez linków, stopka w 2 liniach.")
 
 
-def gpt_generate_text(system_prompt: str, user_prompt: str) -> str | None:
+def _strip_code_fence(raw: str) -> str:
+    cleaned = raw.strip()
+    if cleaned.startswith("```"):
+        lines = [line for line in cleaned.splitlines() if not line.startswith("```")]
+        return "\n".join(lines).strip()
+    return cleaned
+
+
+def _default_image_prompt(post_text: str) -> str:
+    snippet = textwrap.shorten(" ".join(post_text.split()), width=220, placeholder="…")
+    return (
+        "Fotorealistyczne zdjęcie ilustrujące temat wpisu: "
+        f"{snippet}. Reporterskie ujęcie, realistyczne kolory, brak napisów."
+    )
+
+
+def _normalise_media_payload(media: Any, fallback_prompt: str) -> list[dict[str, Any]]:
+    supported = {"photo", "video", "doc"}
+    items = media or []
+    if isinstance(items, dict):
+        items = [items]
+    normalised: list[dict[str, Any]] = []
+    for entry in items:
+        if not isinstance(entry, dict):
+            continue
+        media_type = str(entry.get("type", "")).strip().lower() or "photo"
+        if media_type == "image":
+            media_type = "photo"
+        if media_type not in supported:
+            continue
+        url = str(entry.get("url", "") or "").strip()
+        prompt = str(entry.get("prompt", "") or "").strip()
+        title = str(entry.get("title", "") or "").strip()
+        has_spoiler_value = entry.get("has_spoiler", entry.get("spoiler"))
+        has_spoiler = bool(has_spoiler_value) if has_spoiler_value is not None else False
+        source = str(entry.get("source", "") or "").strip().lower()
+        if not source:
+            source = "article" if url else "generate"
+        normalised.append(
+            {
+                "type": media_type,
+                "url": url,
+                "prompt": prompt,
+                "title": title,
+                "source": source,
+                "has_spoiler": has_spoiler,
+            }
+        )
+    if not normalised:
+        normalised.append(
+            {
+                "type": "photo",
+                "url": "",
+                "prompt": fallback_prompt,
+                "title": "Ilustracja tematu wpisu",
+                "source": "generate",
+                "has_spoiler": False,
+            }
+        )
+    has_photo = any(item["type"] == "photo" for item in normalised)
+    if not has_photo:
+        normalised.insert(
+            0,
+            {
+                "type": "photo",
+                "url": "",
+                "prompt": fallback_prompt,
+                "title": "Ilustracja tematu wpisu",
+                "source": "generate",
+                "has_spoiler": False,
+            },
+        )
+    for item in normalised:
+        if item["type"] == "photo" and not item["url"] and not item["prompt"]:
+            item["prompt"] = fallback_prompt
+    return normalised[:5]
+
+
+def _parse_gpt_payload(raw: str) -> dict[str, Any] | None:
+    cleaned = _strip_code_fence(raw)
+    try:
+        data = json.loads(cleaned)
+    except json.JSONDecodeError:
+        logger.warning("GPT zwrócił niepoprawny JSON: %s", raw)
+        return None
+    if not isinstance(data, dict):
+        return None
+    text = str(data.get("post_text", "") or "").strip()
+    if not text:
+        return None
+    media = _normalise_media_payload(data.get("media"), _default_image_prompt(text))
+    return {"post_text": text, "media": media, "raw_response": cleaned}
+
+
+def gpt_generate_text(system_prompt: str, user_prompt: str, *, response_format: dict[str, Any] | None = None) -> str | None:
     cli = _client()
     try:
-        r = cli.chat.completions.create(
-            model=os.getenv("OPENAI_MODEL", "gpt-4o"),
-            temperature=float(os.getenv("OPENAI_TEMPERATURE", 0.3)),
-            messages=[{"role":"system","content":system_prompt},
-                      {"role":"user","content":user_prompt}],
-        )
+        kwargs: dict[str, Any] = {
+            "model": os.getenv("OPENAI_MODEL", "gpt-4o"),
+            "temperature": float(os.getenv("OPENAI_TEMPERATURE", 0.3)),
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+        }
+        if response_format is not None:
+            kwargs["response_format"] = response_format
+        r = cli.chat.completions.create(**kwargs)
         return r.choices[0].message.content.strip()
     except RateLimitError as e:
         # twarde „insufficient_quota” – nie retry’ujemy, zwracamy None
@@ -55,11 +162,59 @@ def gpt_generate_text(system_prompt: str, user_prompt: str) -> str | None:
         # pozwól Celery autoretry
         raise
 
-def gpt_new_draft(channel: Channel) -> str | None:
+def gpt_new_draft(channel: Channel) -> dict[str, Any] | None:
+    return gpt_generate_post_payload(channel)
+
+
+def gpt_generate_post_payload(channel: Channel, article: dict[str, Any] | None = None) -> dict[str, Any] | None:
     sys = _channel_system_prompt(channel)
-    usr = ("Wygeneruj JEDEN gotowy wpis zgodnie z zasadami. "
-           "Zawrzyj stopkę identyczną jak w kanale. Nie dodawaj linków.")
-    return gpt_generate_text(sys, usr)
+    article_context = ""
+    if article:
+        article_bits = []
+        title = str(article.get("title", "") or "").strip()
+        if title:
+            article_bits.append(f"Tytuł artykułu: {title}")
+        summary = str(article.get("summary", "") or "").strip()
+        if summary:
+            article_bits.append(f"Podsumowanie artykułu: {summary}")
+        lead = str(article.get("lead", "") or "").strip()
+        if lead:
+            article_bits.append(f"Lead: {lead}")
+        image_url = str(article.get("image_url", "") or "").strip()
+        if image_url:
+            article_bits.append(f"Preferowane zdjęcie: {image_url}")
+        url = str(article.get("url", "") or "").strip()
+        if url:
+            article_bits.append(f"Źródło: {url}")
+        if article_bits:
+            article_context = "\n".join(article_bits)
+    instructions = [
+        "Zwróć dokładnie jeden obiekt JSON zawierający pola:",
+        "- post_text: gotowy tekst posta zgodny z zasadami kanału;",
+        "- media: lista 1-3 obiektów opisujących multimedia do posta.",
+        "Każdy obiekt media powinien mieć pola: type (photo/video/doc), title (krótki opis),",
+        "source (article/generate/external), opcjonalnie url (gdy istnieje źródło) oraz",
+        "opcjonalnie prompt (opis do wygenerowania grafiki).",
+        "Zawsze dodaj przynajmniej jeden element typu photo. Jeśli masz podany URL artykułu",
+        "albo adres grafiki, użyj go w polu url i ustaw source=article.",
+        "Jeżeli nie ma zdjęcia, przygotuj realistyczny prompt opisujący scenę pasującą",
+        "do tematu (np. myśliwiec F-16 dla wiadomości o rakietach).",
+        "Dla wideo/dokumentów zawsze podawaj pełny url.",
+    ]
+    if channel.no_links_in_text:
+        instructions.append("Nie dodawaj linków w treści post_text.")
+    if article_context:
+        instructions.append("Korzystaj z poniższych danych artykułu:")
+        instructions.append(article_context)
+    usr = "\n".join(instructions)
+    raw = gpt_generate_text(
+        sys,
+        usr,
+        response_format={"type": "json_object"},
+    )
+    if raw is None:
+        return None
+    return _parse_gpt_payload(raw)
 
 def gpt_rewrite_text(channel: Channel, text: str, editor_prompt: str) -> str:
     sys = _channel_system_prompt(channel)
@@ -68,14 +223,98 @@ def gpt_rewrite_text(channel: Channel, text: str, editor_prompt: str) -> str:
            f"[Wytyczne edytora]: {editor_prompt}\n\n[Tekst]:\n{text}")
     return gpt_generate_text(sys, usr)
 
+
+def _media_expiry_deadline():
+    return timezone.now() + timedelta(days=int(os.getenv("MEDIA_CACHE_TTL_DAYS", 7)))
+
+
+def _generate_photo_for_media(pm: PostMedia, prompt: str) -> str:
+    prompt = (prompt or "").strip()
+    if not prompt:
+        return pm.cache_path or ""
+    client = _client()
+    model = os.getenv("OPENAI_IMAGE_MODEL", "gpt-image-1")
+    size = os.getenv("OPENAI_IMAGE_SIZE", "1024x1024")
+    quality = os.getenv("OPENAI_IMAGE_QUALITY", "standard")
+    response = client.images.generate(model=model, prompt=prompt, size=size, quality=quality)
+    if not response.data:
+        return pm.cache_path or ""
+    image_data = response.data[0].b64_json
+    if not image_data:
+        return pm.cache_path or ""
+    media_root = Path(settings.MEDIA_ROOT)
+    cache_dir = media_root / "cache"
+    os.makedirs(cache_dir, exist_ok=True)
+    fname = cache_dir / f"{pm.id}.png"
+    with open(fname, "wb") as fh:
+        fh.write(base64.b64decode(image_data))
+    pm.cache_path = fname.as_posix()
+    pm.expires_at = _media_expiry_deadline()
+    pm.save(update_fields=["cache_path", "expires_at"])
+    return pm.cache_path
+
+
+def attach_media_from_payload(post: Post, media_payload: list[dict[str, Any]]):
+    post.media.all().delete()
+    for idx, item in enumerate(media_payload):
+        media_type = str(item.get("type", "photo") or "photo").strip().lower()
+        if media_type == "image":
+            media_type = "photo"
+        if media_type not in {"photo", "video", "doc"}:
+            continue
+        url = str(item.get("url", "") or "").strip()
+        has_spoiler = item.get("has_spoiler")
+        if has_spoiler is None and media_type == "photo":
+            has_spoiler = bool(getattr(post.channel, "auto_blur_default", False))
+        else:
+            has_spoiler = bool(has_spoiler)
+        pm = PostMedia.objects.create(
+            post=post,
+            type=media_type,
+            source_url=url,
+            order=idx,
+            has_spoiler=has_spoiler,
+        )
+        if url:
+            try:
+                cache_media(pm)
+            except Exception:
+                logger.exception("Nie udało się pobrać medium %s dla posta %s", pm.id, post.id)
+        elif media_type == "photo" and item.get("prompt"):
+            try:
+                _generate_photo_for_media(pm, item["prompt"])
+            except Exception:
+                logger.exception("Nie udało się wygenerować grafiki dla posta %s", post.id)
+
+
+def create_post_from_payload(channel: Channel, payload: dict[str, Any]) -> Post:
+    text = str(payload.get("post_text", "") or "").strip()
+    if not text:
+        raise ValueError("Brak treści posta w odpowiedzi GPT")
+    raw_payload = payload.get("raw_response")
+    if raw_payload is None:
+        raw_payload = json.dumps(payload, ensure_ascii=False)
+    post = Post.objects.create(
+        channel=channel,
+        text=text,
+        status="DRAFT",
+        origin="gpt",
+        generated_prompt=raw_payload,
+    )
+    media_items = payload.get("media") or []
+    if isinstance(media_items, list):
+        attach_media_from_payload(post, media_items)
+    return post
+
+
 def ensure_min_drafts(channel: Channel):
     need = channel.draft_target_count - channel.posts.filter(status="DRAFT").count()
     created = 0
     for _ in range(max(0, need)):
-        text = gpt_new_draft(channel)
-        if text is None:
+        payload = gpt_new_draft(channel)
+        if payload is None:
             break
-        Post.objects.create(channel=channel, text=text, status="DRAFT", origin="gpt")
+        create_post_from_payload(channel, payload)
         created += 1
     return created
 
