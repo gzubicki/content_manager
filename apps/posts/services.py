@@ -16,7 +16,9 @@ from dateutil import tz
 
 
 def _bot_for(channel: Channel):
-    token = channel.bot_token or settings.TG_BOT_TOKEN
+    token = (channel.bot_token or "").strip()
+    if not token:
+        return None
     return Bot(token=token)
 
 _oai = None

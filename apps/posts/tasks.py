@@ -1,10 +1,16 @@
+import asyncio
+import logging
+
 from celery import shared_task
 from django.utils import timezone
 from telegram import InputMediaPhoto, InputMediaVideo, InputMediaDocument
+
 from .models import Post, Channel
 from . import services
-import asyncio
 from openai import RateLimitError, APIError, APIConnectionError, Timeout
+
+
+logger = logging.getLogger(__name__)
 
 
 @shared_task
@@ -26,6 +32,13 @@ def task_publish_due():
 
 async def _publish_async(post: Post):
     bot = services._bot_for(post.channel)
+    if bot is None:
+        logger.warning(
+            "Skipping publish for channel %s (%s): missing bot token",
+            post.channel_id,
+            getattr(post.channel, "slug", None),
+        )
+        return None
     chat = post.channel.tg_channel_id
     medias = list(post.media.all().order_by("order", "id"))
     sent_group_ids = []
@@ -80,7 +93,10 @@ async def _publish_async(post: Post):
 @shared_task
 def publish_post(post_id: int):
     post = Post.objects.select_related("channel").get(id=post_id)
-    sent_group_ids, msg_id = asyncio.run(_publish_async(post))
+    result = asyncio.run(_publish_async(post))
+    if result is None:
+        return None
+    sent_group_ids, msg_id = result
     post.message_id = msg_id
     post.dupe_score = services.compute_dupe(post)
     post.status = "PUBLISHED"
