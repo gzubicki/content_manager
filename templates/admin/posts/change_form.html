@@ -39,6 +39,11 @@
           <ul class="object-tools">
             {% block object-tools-items %}
               {% change_form_object_tools %}
+              {% if rewrite_url %}
+                <li>
+                  <a href="{{ rewrite_url }}" class="addlink">GPT: korekta</a>
+                </li>
+              {% endif %}
             {% endblock %}
           </ul>
         {% endif %}

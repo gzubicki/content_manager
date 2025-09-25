@@ -7,7 +7,6 @@ from django import forms
 from django.conf import settings
 from django.contrib import admin, messages
 from django.contrib.admin import helpers
-from django.contrib.admin.helpers import ActionForm as AdminActionForm
 from django.contrib.admin.widgets import AdminSplitDateTime
 from django.core.exceptions import PermissionDenied
 from django.core.serializers.json import DjangoJSONEncoder
@@ -38,10 +37,6 @@ def media_public_url(media: PostMedia) -> str:
     src = (media.source_url or "").strip()
     return src
 
-
-
-class PostActionForm(AdminActionForm):
-    prompt = forms.CharField(label="Prompt korekty (opcjonalny)", required=False)
 
 
 class RescheduleForm(forms.Form):
@@ -205,12 +200,23 @@ class ChannelAdmin(admin.ModelAdmin):
             n += 1
         self.message_user(request, f"Zlecono generowanie GPT dla {n} kanał(ów) – sprawdź za chwilę DRAFTY.")
 
+DEFAULT_REWRITE_PROMPT = "Popraw styl i klarowność, zachowaj treść i stopkę."
+
+
+class RewritePromptForm(forms.Form):
+    prompt = forms.CharField(
+        label="Dodatkowy prompt dla GPT",
+        required=False,
+        widget=forms.Textarea(attrs={"rows": 4}),
+        help_text="Pozostaw puste, aby użyć domyślnej korekty stylu.",
+    )
+
+
 class BasePostAdmin(admin.ModelAdmin):
     form = PostForm
-    action_form = PostActionForm
     list_display = ("id","channel","status","scheduled_at","created_at","dupe_score","short")
     list_filter = ("channel","status","schedule_mode")
-    actions = ["act_fill_to_20","act_approve","act_schedule","act_publish_now","act_delete","act_gpt_rewrite"]
+    actions = ["act_fill_to_20","act_approve","act_schedule","act_publish_now","act_delete"]
     ordering = ("-created_at",)
     change_list_template = "admin/posts/post_cards.html"
     change_form_template = "admin/posts/change_form.html"
@@ -336,6 +342,8 @@ class BasePostAdmin(admin.ModelAdmin):
         preview = self._build_preview_context(request, context, obj)
         context["preview"] = preview
         context["preview_media_json"] = preview.get("media_json", "[]")
+        if obj and obj.pk:
+            context["rewrite_url"] = self._object_url(obj, "rewrite")
         return super().render_change_form(request, context, add=add, change=change, form_url=form_url, obj=obj)
 
     def changelist_view(self, request, extra_context=None):
@@ -349,6 +357,7 @@ class BasePostAdmin(admin.ModelAdmin):
                     post.change_url = self._object_url(post, "change")
                     post.delete_url = self._object_url(post, "delete")
                     post.reschedule_url = self._object_url(post, "reschedule")
+                    post.rewrite_url = self._object_url(post, "rewrite")
         return response
 
     def get_urls(self):
@@ -359,7 +368,12 @@ class BasePostAdmin(admin.ModelAdmin):
                 "<int:object_id>/przeloz/",
                 self.admin_site.admin_view(self.reschedule_view),
                 name=f"{opts.app_label}_{opts.model_name}_reschedule",
-            )
+            ),
+            path(
+                "<int:object_id>/gpt-korekta/",
+                self.admin_site.admin_view(self.rewrite_view),
+                name=f"{opts.app_label}_{opts.model_name}_rewrite",
+            ),
         ]
         return custom + urls
 
@@ -407,6 +421,36 @@ class BasePostAdmin(admin.ModelAdmin):
         }
         return TemplateResponse(request, self.reschedule_template, context)
 
+    def rewrite_view(self, request, object_id):
+        post = get_object_or_404(self.model, pk=object_id)
+        if not self.has_change_permission(request, post):
+            raise PermissionDenied
+
+        form = RewritePromptForm(request.POST or None)
+
+        if request.method == "POST" and form.is_valid():
+            prompt = (form.cleaned_data.get("prompt") or "").strip() or DEFAULT_REWRITE_PROMPT
+            task_gpt_rewrite_post.delay(post.id, prompt)
+            self.message_user(
+                request,
+                "Zlecono korektę wpisu przy użyciu GPT.",
+                level=messages.INFO,
+            )
+            changelist_url = reverse(f"admin:{self.model._meta.app_label}_{self.model._meta.model_name}_changelist")
+            return redirect(changelist_url)
+
+        context = {
+            **self.admin_site.each_context(request),
+            "opts": self.model._meta,
+            "original": post,
+            "title": "Korekta wpisu przez GPT",
+            "form": form,
+            "media": form.media,
+            "default_prompt": DEFAULT_REWRITE_PROMPT,
+            "changelist_url": reverse(f"admin:{self.model._meta.app_label}_{self.model._meta.model_name}_changelist"),
+        }
+        return TemplateResponse(request, "admin/posts/rewrite.html", context)
+
     @admin.action(description="Uzupełnij do 20 (bieżący kanał / wszystkie jeśli brak selekcji)")
     def act_fill_to_20(self, request, qs):
         channels = {p.channel for p in qs} or set(Channel.objects.all())
@@ -442,16 +486,6 @@ class BasePostAdmin(admin.ModelAdmin):
     def act_delete(self, request, qs):
         qs.delete()
 
-    @admin.action(description="GPT: korekta zaznaczonych (z promptem)")
-    def act_gpt_rewrite(self, request, queryset):
-        prompt = (request.POST or {}).get("prompt", "").strip()
-        cnt = 0
-        for p in queryset:
-            task_gpt_rewrite_post.delay(p.id, prompt or "Popraw styl i klarowność, zachowaj treść i stopkę.")
-            cnt += 1
-        self.message_user(request, f"Zlecono korektę GPT dla {cnt} wpisów.", level=messages.INFO)
-
-
 @admin.register(DraftPost)
 class DraftPostAdmin(BasePostAdmin):
     def filter_queryset(self, qs):
@@ -460,7 +494,7 @@ class DraftPostAdmin(BasePostAdmin):
 
 @admin.register(ScheduledPost)
 class ScheduledPostAdmin(BasePostAdmin):
-    actions = ["act_schedule","act_publish_now","act_delete","act_gpt_rewrite"]
+    actions = ["act_schedule","act_publish_now","act_delete"]
     ordering = ("scheduled_at",)
     date_hierarchy = "scheduled_at"
 
