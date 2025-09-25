@@ -1,0 +1,37 @@
+#content-main.post-edit{ display:grid; gap:24px; align-items:start }
+@media (min-width: 1200px){
+  #content-main.post-edit{ grid-template-columns:minmax(0,1fr) 360px }
+}
+@media (min-width: 1440px){
+  #content-main.post-edit{ grid-template-columns:minmax(0,1fr) 420px }
+}
+
+.post-edit__form-body{ display:flex; flex-direction:column; gap:24px }
+.post-edit__form .object-tools{ margin-bottom:16px }
+.post-edit__form fieldset.module{ border-radius:12px; border:1px solid rgba(148,163,184,0.3) }
+.post-edit__form fieldset.module h2{ font-size:16px; font-weight:600 }
+
+#id_text{ font-family:"JetBrains Mono", "SFMono-Regular", Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+  min-height:280px; font-size:14px; line-height:1.55 }
+
+.inline-group{ margin-top:0 }
+.inline-group .post-media-inline{ border:1px solid rgba(148,163,184,0.35); border-radius:12px; padding:16px; margin-bottom:16px; background:#fff }
+.inline-group .post-media-inline.has_original{ background:#f8fafc }
+.inline-group .post-media-inline h3{ margin-top:0; font-size:15px; display:flex; justify-content:space-between; align-items:center }
+.inline-group .post-media-inline .form-row{ display:flex; flex-wrap:wrap; gap:16px }
+.inline-group .post-media-inline .form-row>div{ flex:1 1 220px }
+.inline-group .post-media-inline .form-row input[type="text"],
+.inline-group .post-media-inline .form-row input[type="number"],
+.inline-group .post-media-inline .form-row select{ width:100% }
+.inline-group .post-media-inline .aligned .help{ margin-left:0 }
+.inline-group .post-media-inline .delete{ margin-left:auto }
+
+.post-edit__preview{ position:sticky; top:32px; display:flex; flex-direction:column; gap:16px }
+.post-edit__preview-header h2{ margin:0; font-size:18px }
+.post-edit__preview-header p{ margin:0; color:#6b7280; font-size:13px }
+.post-edit__preview-body .post-card{ box-shadow:0 20px 35px rgba(15,23,42,0.25) }
+.post-card--preview .post-card__footer{ justify-content:center }
+.post-card__hint{ font-size:12px; color:rgba(226,232,240,0.85); text-align:center }
+
+body.dark-theme .inline-group .post-media-inline{ background:rgba(15,23,42,0.6); border-color:rgba(148,163,184,0.3) }
+body.dark-theme .post-edit__preview-header p{ color:rgba(226,232,240,0.75) }

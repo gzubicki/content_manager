@@ -1,8 +1,20 @@
 .tg-wrap{ width:var(--w); border-radius:12px; overflow:hidden; border:1px solid rgba(0,0,0,.1);
   font:15px/1.35 Roboto, system-ui; background:#0f1115; color:#e5e7eb }
 .tg-wrap[data-theme="light"]{ background:#fff; color:#111827; border-color:#e5e7eb }
-.tg-media img, .tg-album img{ display:block; width:100%; height:auto; object-fit:cover }
 .tg-text{ padding:12px 14px; white-space:pre-wrap; word-break:break-word }
+
+.tg-media,
+.tg-album__item{ position:relative; overflow:hidden; background:#020617 }
+.tg-media img,
+.tg-media video,
+.tg-album__item img,
+.tg-album__item video{ display:block; width:100%; height:100%; object-fit:cover }
 .tg-album.two{ display:grid; grid-template-columns:1fr 1fr; gap:2px }
 .tg-album.many{ display:grid; grid-template-columns:1fr 1fr; gap:2px }
-.tg-album.many .large{ grid-column:1 / -1 }
+.tg-album__item{ aspect-ratio:1/1 }
+.tg-album__item.large{ grid-column:1 / -1; aspect-ratio:3/2 }
+
+.tg-doc{ display:flex; align-items:center; gap:8px; padding:12px; font-weight:600; background:rgba(148,163,184,0.1); height:100% }
+.tg-wrap[data-theme="light"] .tg-doc{ background:rgba(15,23,42,0.05) }
+.tg-doc__icon{ font-size:18px }
+.tg-doc__name{ flex:1; min-width:0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis }
