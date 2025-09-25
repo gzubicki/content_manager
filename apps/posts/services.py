@@ -121,4 +121,5 @@ def cache_media(pm: PostMedia):
             for chunk in r.iter_bytes(): f.write(chunk)
     pm.cache_path = fname
     pm.expires_at = timezone.now() + timedelta(days=int(os.getenv("MEDIA_CACHE_TTL_DAYS", 7)))
-    pm.save(); return fname
+    pm.save()
+    return fname

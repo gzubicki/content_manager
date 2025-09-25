@@ -1,7 +1,7 @@
 from django.contrib import admin, messages
 from django.contrib.admin.helpers import ActionForm as AdminActionForm
 from django import forms
-from .models import Post, PostMedia, Channel
+from .models import Post, PostMedia, Channel, DraftPost, ScheduledPost
 from . import services
 from .validators import validate_post_text_for_channel
 from .tasks import task_gpt_generate_one, task_gpt_rewrite_post, task_gpt_generate_for_channel
@@ -54,15 +54,22 @@ class ChannelAdmin(admin.ModelAdmin):
             n += 1
         self.message_user(request, f"Zlecono generowanie GPT dla {n} kanał(ów) – sprawdź za chwilę DRAFTY.")
 
-@admin.register(Post)
-class PostAdmin(admin.ModelAdmin):
+class BasePostAdmin(admin.ModelAdmin):
     form = PostForm
     action_form = PostActionForm
     list_display = ("id","channel","status","scheduled_at","created_at","dupe_score","short")
     list_filter = ("channel","status","schedule_mode")
     actions = ["act_fill_to_20","act_approve","act_schedule","act_publish_now","act_delete","act_gpt_rewrite"]
+    ordering = ("-created_at",)
 
     def short(self, obj): return obj.text[:80] + ("…" if len(obj.text)>80 else "")
+
+    def get_queryset(self, request):
+        qs = super().get_queryset(request)
+        return self.filter_queryset(qs)
+
+    def filter_queryset(self, qs):
+        return qs
 
     @admin.action(description="Uzupełnij do 20 (bieżący kanał / wszystkie jeśli brak selekcji)")
     def act_fill_to_20(self, request, qs):
@@ -109,6 +116,22 @@ class PostAdmin(admin.ModelAdmin):
             task_gpt_rewrite_post.delay(p.id, prompt or "Popraw styl i klarowność, zachowaj treść i stopkę.")
             cnt += 1
         self.message_user(request, f"Zlecono korektę GPT dla {cnt} wpisów.", level=messages.INFO)
+
+
+@admin.register(DraftPost)
+class DraftPostAdmin(BasePostAdmin):
+    def filter_queryset(self, qs):
+        return qs.filter(status="DRAFT")
+
+
+@admin.register(ScheduledPost)
+class ScheduledPostAdmin(BasePostAdmin):
+    actions = ["act_schedule","act_publish_now","act_delete","act_gpt_rewrite"]
+    ordering = ("scheduled_at",)
+    date_hierarchy = "scheduled_at"
+
+    def filter_queryset(self, qs):
+        return qs.filter(status__in=["APPROVED","SCHEDULED"], scheduled_at__isnull=False)
 
 
 @admin.register(PostMedia)
