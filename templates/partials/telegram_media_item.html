@@ -1,0 +1,12 @@
+{% with src=item.src %}
+  {% if item.type == 'video' %}
+    <video src="{{ src }}"{% if classes %} class="{{ classes }}"{% endif %} controls preload="metadata" playsinline muted loop></video>
+  {% elif item.type == 'doc' %}
+    <div class="tg-doc{% if classes %} {{ classes }}{% endif %}">
+      <span class="tg-doc__icon">📎</span>
+      <span class="tg-doc__name">{{ item.name|default:src }}</span>
+    </div>
+  {% else %}
+    <img src="{{ src }}" alt=""{% if classes %} class="{{ classes }}"{% endif %}>
+  {% endif %}
+{% endwith %}
