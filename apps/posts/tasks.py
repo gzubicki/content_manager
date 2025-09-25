@@ -1,6 +1,6 @@
 from celery import shared_task
 from django.utils import timezone
-from telegram import InputMediaPhoto, InputMediaVideo
+from telegram import InputMediaPhoto, InputMediaVideo, InputMediaDocument
 from .models import Post, Channel
 from . import services
 import asyncio
@@ -27,24 +27,53 @@ def task_publish_due():
 async def _publish_async(post: Post):
     bot = services._bot_for(post.channel)
     chat = post.channel.tg_channel_id
-    medias = list(post.media.all())
+    medias = list(post.media.all().order_by("order", "id"))
     sent_group_ids = []
     if medias:
         im = []
-        for m in medias:
-            media = m.tg_file_id or (open(m.cache_path, "rb") if m.cache_path else None)
-            if m.type == "photo":
-                im.append(InputMediaPhoto(media=media, has_spoiler=m.has_spoiler))
-            elif m.type == "video":
-                im.append(InputMediaVideo(media=media, has_spoiler=m.has_spoiler))
-        res = await bot.send_media_group(chat_id=chat, media=im)
-        sent_group_ids = [r.message_id for r in res]
-        for x in im:
-            f = getattr(x.media, "file", None) or getattr(x.media, "fp", None)
-            try:
-                if hasattr(f, "close"): f.close()
-            except Exception:
-                pass
+        opened_files = []
+        media_records = []
+        try:
+            for m in medias:
+                media = m.tg_file_id
+                if not media:
+                    cache_path = m.cache_path
+                    if not cache_path:
+                        cache_path = await asyncio.to_thread(services.cache_media, m)
+                    if cache_path:
+                        media = open(cache_path, "rb")
+                        opened_files.append(media)
+                if not media:
+                    continue
+                if m.type == "photo":
+                    im.append(InputMediaPhoto(media=media, has_spoiler=m.has_spoiler))
+                elif m.type == "video":
+                    im.append(InputMediaVideo(media=media, has_spoiler=m.has_spoiler))
+                elif m.type == "doc":
+                    im.append(InputMediaDocument(media=media))
+                else:
+                    continue
+                media_records.append(m)
+            if im:
+                res = await bot.send_media_group(chat_id=chat, media=im)
+                sent_group_ids = [r.message_id for r in res]
+                for record, message in zip(media_records, res):
+                    file_id = None
+                    if record.type == "photo" and getattr(message, "photo", None):
+                        file_id = message.photo[-1].file_id
+                    elif record.type == "video" and getattr(message, "video", None):
+                        file_id = message.video.file_id
+                    elif record.type == "doc" and getattr(message, "document", None):
+                        file_id = message.document.file_id
+                    if file_id and record.tg_file_id != file_id:
+                        record.tg_file_id = file_id
+                        record.save(update_fields=["tg_file_id"])
+        finally:
+            for fh in opened_files:
+                try:
+                    fh.close()
+                except Exception:
+                    pass
     msg = await bot.send_message(chat_id=chat, text=post.text)
     return sent_group_ids, msg.message_id
 

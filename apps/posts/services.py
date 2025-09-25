@@ -1,4 +1,9 @@
-import os, httpx
+import os
+import shutil
+from pathlib import Path
+from urllib.parse import urlparse
+
+import httpx
 from openai import OpenAI, RateLimitError, APIError, APIConnectionError, Timeout
 
 from datetime import timedelta
@@ -126,17 +131,35 @@ def purge_cache():
             pm.cache_path = ""; pm.save()
             
 def cache_media(pm: PostMedia):
-    if pm.cache_path: return pm.cache_path
-    url = pm.source_url
+    if pm.cache_path and os.path.exists(pm.cache_path):
+        return pm.cache_path
+    url = (pm.source_url or "").strip()
     if not url: return ""
-    cache_dir = settings.MEDIA_ROOT / "cache"
+    media_root = Path(settings.MEDIA_ROOT)
+    cache_dir = media_root / "cache"
     os.makedirs(cache_dir, exist_ok=True)
-    ext = os.path.splitext(url)[-1] or ".bin"
-    fname = (cache_dir / f"{pm.id}{ext}").as_posix()
-    with httpx.stream("GET", url, timeout=30) as r:
-        r.raise_for_status()
-        with open(fname, "wb") as f:
-            for chunk in r.iter_bytes(): f.write(chunk)
-    pm.cache_path = fname
+    parsed = urlparse(url)
+    path = parsed.path or ""
+    ext = os.path.splitext(path)[-1] or ".bin"
+    fname = cache_dir / f"{pm.id}{ext}"
+
+    if parsed.scheme in ("http", "https"):
+        with httpx.stream("GET", url, timeout=30) as r:
+            r.raise_for_status()
+            with open(fname, "wb") as f:
+                for chunk in r.iter_bytes():
+                    f.write(chunk)
+    else:
+        src = path if parsed.scheme == "file" else url
+        if not os.path.isabs(src):
+            candidate = (media_root / src).resolve()
+            if candidate.exists():
+                src = candidate.as_posix()
+        if not os.path.exists(src):
+            return pm.cache_path or ""
+        shutil.copyfile(src, fname)
+
+    pm.cache_path = fname.as_posix()
     pm.expires_at = timezone.now() + timedelta(days=int(os.getenv("MEDIA_CACHE_TTL_DAYS", 7)))
-    pm.save(); return fname
+    pm.save()
+    return pm.cache_path
