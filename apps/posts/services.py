@@ -142,7 +142,11 @@ def _parse_gpt_payload(raw: str) -> dict[str, Any] | None:
 
 
 def gpt_generate_text(system_prompt: str, user_prompt: str, *, response_format: dict[str, Any] | None = None) -> str | None:
-    cli = _client()
+    try:
+        cli = _client()
+    except RuntimeError as exc:
+        logger.warning("Pomijam generowanie GPT: %s", exc)
+        return None
     try:
         model = os.getenv("OPENAI_MODEL", "gpt-4.1")
         temperature = float(os.getenv("OPENAI_TEMPERATURE", 0.2))
@@ -285,9 +289,10 @@ def gpt_rewrite_text(channel: Channel, text: str, editor_prompt: str) -> str:
     usr = (
         "Przepisz poniższy tekst zgodnie z zasadami i wytycznymi edytora. "
         "Zachowaj charakter kanału, wymagania dotyczące długości, emoji oraz stopki opisane w systemowym promptcie."
-        f"\n\n[Wytyczne edytora]: {editor_prompt}\n\n[Tekst]:\n{text}"
+
     )
-    return gpt_generate_text(sys, usr)
+    rewritten = gpt_generate_text(sys, usr)
+    return rewritten or text
 
 
 def _media_expiry_deadline():
