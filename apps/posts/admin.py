@@ -177,7 +177,7 @@ class ChannelAdmin(admin.ModelAdmin):
     search_fields = ("name","slug","tg_channel_id")
     actions = ["act_fill_to_20","act_gpt_generate_20"]
 
-    @admin.action(description="Uzupełnij do 20 (zaznaczone kanały)")
+    @admin.action(description="Uzupełnij drafty")
     def act_fill_to_20(self, request, queryset):
         queued = 0
         for ch in queryset:
@@ -236,6 +236,10 @@ class BasePostAdmin(admin.ModelAdmin):
     def _object_url(self, obj, action):
         opts = self.model._meta
         return reverse(f"admin:{opts.app_label}_{opts.model_name}_{action}", args=[obj.pk])
+
+    def _changelist_url(self):
+        opts = self.model._meta
+        return reverse(f"admin:{opts.app_label}_{opts.model_name}_changelist")
 
     def _media_to_url(self, media: PostMedia) -> str:
         return media_public_url(media)
@@ -358,7 +362,12 @@ class BasePostAdmin(admin.ModelAdmin):
                     post.delete_url = self._object_url(post, "delete")
                     post.reschedule_url = self._object_url(post, "reschedule")
                     post.rewrite_url = self._object_url(post, "rewrite")
+                    post.approve_url = self.get_approve_url(post)
+                    post.is_draft = post.status == Post.Status.DRAFT
         return response
+
+    def get_approve_url(self, post):
+        return None
 
     def get_urls(self):
         urls = super().get_urls()
@@ -451,7 +460,7 @@ class BasePostAdmin(admin.ModelAdmin):
         }
         return TemplateResponse(request, "admin/posts/rewrite.html", context)
 
-    @admin.action(description="Uzupełnij do 20 (bieżący kanał / wszystkie jeśli brak selekcji)")
+    @admin.action(description="Uzupełnij drafty")
     def act_fill_to_20(self, request, qs):
         channels = {p.channel for p in qs} or set(Channel.objects.all())
         queued = 0
@@ -470,8 +479,7 @@ class BasePostAdmin(admin.ModelAdmin):
     @admin.action(description="Zatwierdź i nadaj slot AUTO")
     def act_approve(self, request, qs):
         for p in qs:
-            p.status = "APPROVED"; p.approved_by = request.user; p.save()
-            services.assign_auto_slot(p)
+            services.approve_post(p, request.user)
 
     @admin.action(description="Przelicz slot AUTO")
     def act_schedule(self, request, qs):
@@ -488,8 +496,50 @@ class BasePostAdmin(admin.ModelAdmin):
 
 @admin.register(DraftPost)
 class DraftPostAdmin(BasePostAdmin):
+    approve_action = "approve"
+    approve_path = "<int:object_id>/akceptuj/"
+
     def filter_queryset(self, qs):
-        return qs.filter(status="DRAFT")
+        return qs.filter(status=Post.Status.DRAFT)
+
+    def get_urls(self):
+        urls = super().get_urls()
+        opts = self.model._meta
+        custom = [
+            path(
+                self.approve_path,
+                self.admin_site.admin_view(self.approve_view),
+                name=f"{opts.app_label}_{opts.model_name}_{self.approve_action}",
+            ),
+        ]
+        return custom + urls
+
+    def get_approve_url(self, post):
+        return self._object_url(post, self.approve_action)
+
+    def approve_view(self, request, object_id):
+        post = get_object_or_404(self.model, pk=object_id)
+        if not self.has_change_permission(request, post):
+            raise PermissionDenied
+
+        if request.method != "POST":
+            return redirect(self._changelist_url())
+
+        if post.status != Post.Status.DRAFT:
+            self.message_user(
+                request,
+                "Ten wpis nie jest już draftem.",
+                level=messages.WARNING,
+            )
+        else:
+            services.approve_post(post, request.user)
+            self.message_user(
+                request,
+                "Draft zatwierdzony i zaplanowany automatycznie.",
+                level=messages.SUCCESS,
+            )
+
+        return redirect(self._changelist_url())
 
 
 @admin.register(ScheduledPost)
@@ -499,7 +549,10 @@ class ScheduledPostAdmin(BasePostAdmin):
     date_hierarchy = "scheduled_at"
 
     def filter_queryset(self, qs):
-        return qs.filter(status__in=["APPROVED","SCHEDULED"], scheduled_at__isnull=False)
+        return qs.filter(
+            status__in=[Post.Status.APPROVED, Post.Status.SCHEDULED],
+            scheduled_at__isnull=False,
+        )
 
 
 @admin.register(PostMedia)

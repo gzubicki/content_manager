@@ -7,7 +7,7 @@ from telegram import InputMediaPhoto, InputMediaVideo, InputMediaDocument
 
 from .models import Post, Channel
 from . import services
-from openai import RateLimitError, APIError, APIConnectionError, Timeout
+from openai import RateLimitError, APIError, APIConnectionError, APITimeoutError
 
 
 logger = logging.getLogger(__name__)
@@ -104,18 +104,18 @@ def publish_post(post_id: int):
     return {"group": sent_group_ids, "text": msg_id}
 
 @shared_task(bind=True,
-             autoretry_for=(APIError, APIConnectionError, Timeout, RateLimitError),
+             autoretry_for=(APIError, APIConnectionError, APITimeoutError, RateLimitError),
              retry_backoff=True, retry_jitter=True,
              retry_kwargs={"max_retries": 6})
 def task_gpt_generate_for_channel(self, channel_id: int, count: int = 1):
     ch = Channel.objects.get(id=channel_id)
     added = 0
     for _ in range(count):
-        text = services.gpt_new_draft(ch)
-        if text is None:
+        payload = services.gpt_new_draft(ch)
+        if payload is None:
             # np. insufficient_quota – przerwij grzecznie, bez wyjątku
             break
-        Post.objects.create(channel=ch, text=text, status="DRAFT", origin="gpt")
+        services.create_post_from_payload(ch, payload)
         added += 1
     return added
 
@@ -128,12 +128,12 @@ def task_gpt_rewrite_post(post_id: int, editor_prompt: str):
     return p.id
 
 @shared_task(bind=True, rate_limit="1/s",
-             autoretry_for=(APIError, APIConnectionError, Timeout, RateLimitError),
+             autoretry_for=(APIError, APIConnectionError, APITimeoutError, RateLimitError),
              retry_backoff=True, retry_jitter=True, retry_kwargs={"max_retries": 5})
 def task_gpt_generate_one(self, channel_id: int):
     ch = Channel.objects.get(id=channel_id)
-    text = services.gpt_new_draft(ch)
-    if text is None:  # np. brak środków
+    payload = services.gpt_new_draft(ch)
+    if payload is None:  # np. brak środków
         return 0
-    Post.objects.create(channel=ch, text=text, status="DRAFT", origin="gpt")
+    services.create_post_from_payload(ch, payload)
     return 1
