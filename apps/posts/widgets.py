@@ -5,6 +5,8 @@ from typing import Any
 
 from django.contrib.admin.widgets import AdminSplitDateTime
 from django.forms.utils import flatatt
+from django.forms.widgets import HiddenInput
+from django.utils.safestring import mark_safe
 
 
 class FlatpickrSplitDateTimeWidget(AdminSplitDateTime):
@@ -55,6 +57,10 @@ class FlatpickrSplitDateTimeWidget(AdminSplitDateTime):
         widget["attrs"] = widget.get("attrs", {})
         widget["attrs"].update(attrs)
         widget["flat_attrs"] = flatatt(widget["attrs"])
+        widget["hidden_inputs"] = [
+            mark_safe(self._render_hidden_subwidget(subwidget))
+            for subwidget in subwidgets
+        ]
         return context
 
     @staticmethod
@@ -72,6 +78,32 @@ class FlatpickrSplitDateTimeWidget(AdminSplitDateTime):
             if isinstance(attrs, dict):
                 return attrs.get("id", "")
         return ""
+
+    def _render_hidden_subwidget(self, subwidget: Any) -> str:
+        attrs: dict[str, Any] = {}
+        name: str | None = None
+        value: Any = None
+
+        if hasattr(subwidget, "as_widget"):
+            return subwidget.as_widget(
+                attrs={"type": "hidden", "data-flatpickr-hidden": "1"}
+            )
+
+        if isinstance(subwidget, dict):
+            attrs = subwidget.get("attrs") or {}
+            name = subwidget.get("name")
+            value = subwidget.get("value")
+        elif hasattr(subwidget, "data"):
+            data = getattr(subwidget, "data") or {}
+            attrs = data.get("attrs") or {}
+            name = data.get("name")
+            value = data.get("value")
+
+        attrs = {**attrs, "data-flatpickr-hidden": "1"}
+        # Usuwamy klasę prezentacyjną, aby ukryte pola nie były stylowane jak pola tekstowe.
+        attrs.pop("class", None)
+
+        return HiddenInput().render(name or "", value, attrs=attrs)
 
     def value_from_datadict(self, data: dict[str, Any], files: dict[str, Any], name: str) -> list[str]:
         combined_key = f"{name}_flatpickr"
