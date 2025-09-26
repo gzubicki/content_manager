@@ -1,4 +1,3 @@
-import base64
 import json
 import logging
 import os
@@ -13,7 +12,7 @@ from openai import (
     RateLimitError,
     APIError,
     APIConnectionError,
-    Timeout,
+    APITimeoutError,
     BadRequestError,
 )
 
@@ -37,14 +36,17 @@ def _bot_for(channel: Channel):
     return Bot(token=token)
 
 _oai = None
-_IMAGE_SUPPORTS_B64: bool = True
+
+
 def _client():
     global _oai
     if _oai is None:
         key = os.getenv("OPENAI_API_KEY", "")
         if not key:
             raise RuntimeError("Brak OPENAI_API_KEY – drafty wymagają GPT.")
-        _oai = OpenAI(api_key=key, max_retries=0, timeout=30)
+        timeout_s = float(os.getenv("OPENAI_TIMEOUT", 60))
+        max_retries = int(os.getenv("OPENAI_MAX_RETRIES", 0))
+        _oai = OpenAI(api_key=key, max_retries=max_retries, timeout=timeout_s)
     return _oai
 
 def _channel_constraints_prompt(ch: Channel) -> str:
@@ -104,50 +106,22 @@ def _normalise_media_payload(media: Any, fallback_prompt: str) -> list[dict[str,
         if media_type not in supported:
             continue
         url = str(entry.get("url", "") or "").strip()
-        prompt = str(entry.get("prompt", "") or "").strip()
+        if not url:
+            logger.info("Pomijam media bez url: %s", entry)
+            continue
         title = str(entry.get("title", "") or "").strip()
         has_spoiler_value = entry.get("has_spoiler", entry.get("spoiler"))
         has_spoiler = bool(has_spoiler_value) if has_spoiler_value is not None else False
-        source = str(entry.get("source", "") or "").strip().lower()
-        if not source:
-            source = "article" if url else "generate"
+        source = str(entry.get("source", "") or "").strip().lower() or "external"
         normalised.append(
             {
                 "type": media_type,
                 "url": url,
-                "prompt": prompt,
                 "title": title,
                 "source": source,
                 "has_spoiler": has_spoiler,
             }
         )
-    if not normalised:
-        normalised.append(
-            {
-                "type": "photo",
-                "url": "",
-                "prompt": fallback_prompt,
-                "title": "Ilustracja tematu wpisu",
-                "source": "generate",
-                "has_spoiler": False,
-            }
-        )
-    has_photo = any(item["type"] == "photo" for item in normalised)
-    if not has_photo:
-        normalised.insert(
-            0,
-            {
-                "type": "photo",
-                "url": "",
-                "prompt": fallback_prompt,
-                "title": "Ilustracja tematu wpisu",
-                "source": "generate",
-                "has_spoiler": False,
-            },
-        )
-    for item in normalised:
-        if item["type"] == "photo" and not item["url"] and not item["prompt"]:
-            item["prompt"] = fallback_prompt
     return normalised[:5]
 
 
@@ -170,24 +144,74 @@ def _parse_gpt_payload(raw: str) -> dict[str, Any] | None:
 def gpt_generate_text(system_prompt: str, user_prompt: str, *, response_format: dict[str, Any] | None = None) -> str | None:
     cli = _client()
     try:
-        kwargs: dict[str, Any] = {
-            "model": os.getenv("OPENAI_MODEL", "gpt-4o"),
-            "temperature": float(os.getenv("OPENAI_TEMPERATURE", 0.3)),
+        model = os.getenv("OPENAI_MODEL", "gpt-4.1")
+        temperature = float(os.getenv("OPENAI_TEMPERATURE", 0.2))
+
+        use_tools = response_format is None
+        if use_tools:
+            try:
+                response = cli.responses.create(
+                    model=model,
+                    temperature=temperature,
+                    input=[
+                        {
+                            "role": "system",
+                            "content": [{"type": "text", "text": system_prompt}],
+                        },
+                        {
+                            "role": "user",
+                            "content": [{"type": "text", "text": user_prompt}],
+                        },
+                    ],
+                    tools=[
+                        {"type": "web_search"},
+                        {"type": "image_generation"},
+                    ],
+                )
+                text_chunks: list[str] = []
+                output_items = getattr(response, "output", None) or []
+                for item in output_items:
+                    content = getattr(item, "content", None) or []
+                    for part in content:
+                        text = getattr(part, "text", None)
+                        if text:
+                            text_chunks.append(text)
+                if not text_chunks:
+                    fallback_text = getattr(response, "output_text", None)
+                    if isinstance(fallback_text, str) and fallback_text.strip():
+                        text_chunks.append(fallback_text.strip())
+                combined = "\n".join(chunk.strip() for chunk in text_chunks if chunk).strip()
+                if combined:
+                    return combined
+            except BadRequestError as exc:
+                error_param = getattr(exc, "param", "") or ""
+                if "tools" in error_param or "tools" in str(exc):
+                    logger.warning(
+                        "Model %s odrzucił narzędzia (%s) – fallback do zapytania bez tools.",
+                        model,
+                        error_param or exc,
+                    )
+                else:
+                    raise
+
+        chat_kwargs: dict[str, Any] = {
+            "model": model,
+            "temperature": temperature,
             "messages": [
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt},
             ],
         }
         if response_format is not None:
-            kwargs["response_format"] = response_format
-        r = cli.chat.completions.create(**kwargs)
-        return r.choices[0].message.content.strip()
+            chat_kwargs["response_format"] = response_format
+        chat_response = cli.chat.completions.create(**chat_kwargs)
+        return chat_response.choices[0].message.content.strip()
     except RateLimitError as e:
         # twarde „insufficient_quota” – nie retry’ujemy, zwracamy None
         if "insufficient_quota" in str(e):
             return None
         raise
-    except (APIError, APIConnectionError, Timeout):
+    except (APIError, APIConnectionError, APITimeoutError):
         # pozwól Celery autoretry
         raise
 
@@ -220,27 +244,28 @@ def gpt_generate_post_payload(channel: Channel, article: dict[str, Any] | None =
     instructions = [
         "Zwróć dokładnie jeden obiekt JSON zawierający pola:",
         "- post_text: gotowy tekst posta zgodny z zasadami kanału;",
-        "- media: lista 1-3 obiektów opisujących multimedia do posta.",
-        "Każdy obiekt media powinien mieć pola: type (photo/video/doc), title (krótki opis),",
-        "source (article/generate/external), opcjonalnie url (gdy istnieje źródło) oraz",
-        "opcjonalnie prompt (opis do wygenerowania grafiki).",
-        "Zawsze dodaj przynajmniej jeden element typu photo. Jeśli masz podany URL artykułu",
-        "albo adres grafiki, użyj go w polu url i ustaw source=article.",
-        "Jeżeli nie ma zdjęcia, przygotuj realistyczny prompt opisujący scenę pasującą",
-        "do tematu (np. myśliwiec F-16 dla wiadomości o rakietach).",
-        "Dla wideo/dokumentów zawsze podawaj pełny url.",
+        "- media: lista 1-5 obiektów opisujących multimedia do posta.",
+        "Każdy obiekt media MUSI mieć pola: type (photo/video/doc), title (krótki opis)",
+        "oraz source (article/generate/external) i url będący bezpośrednim linkiem do pliku.",
+        "Adres url ma prowadzić prosto do zasobu (np. .jpg, .png, .mp4, .pdf) i być publicznie dostępny.",
+        "Wykożystaj zdjęcia z artykułów, znajdź pasujące zdjęcie w sieci pasujące do treści, jeśli nie masz pliku, wygeneruj.",
+        "Zawsze dodaj przynajmniej jeden element typu photo/video",
     ]
     if channel.max_chars:
         instructions.append(
             "Długość odpowiedzi musi mieścić się w limicie znaków opisanym w systemowym promptcie."
         )
-    instructions.append(
-        "Uwzględnij wymagania dotyczące emoji, stopki i zakazów opisane w systemowym promptcie."
-    )
+
     if article_context:
         instructions.append("Korzystaj z poniższych danych artykułu:")
         instructions.append(article_context)
     usr = "\n".join(instructions)
+    logger.info(
+        "GPT draft request (channel=%s)\nSYSTEM:\n%s\nUSER:\n%s",
+        channel.id,
+        sys,
+        usr,
+    )
     raw = gpt_generate_text(
         sys,
         usr,
@@ -248,6 +273,11 @@ def gpt_generate_post_payload(channel: Channel, article: dict[str, Any] | None =
     )
     if raw is None:
         return None
+    logger.info(
+        "GPT draft response (channel=%s): %s",
+        channel.id,
+        raw,
+    )
     return _parse_gpt_payload(raw)
 
 def gpt_rewrite_text(channel: Channel, text: str, editor_prompt: str) -> str:
@@ -264,118 +294,6 @@ def _media_expiry_deadline():
     return timezone.now() + timedelta(days=int(os.getenv("MEDIA_CACHE_TTL_DAYS", 7)))
 
 
-def _extract_openai_error_param(error: BadRequestError) -> str | None:
-    """Return the parameter that caused a BadRequestError, if present."""
-
-    param = getattr(error, "param", None)
-    if param:
-        return str(param)
-    body = getattr(error, "body", None)
-    body_data: Any | None = None
-    if isinstance(body, dict):
-        body_data = body
-    elif isinstance(body, (str, bytes)):
-        try:
-            body_data = json.loads(body)
-        except Exception:
-            body_data = None
-    if isinstance(body_data, dict):
-        nested = body_data.get("error")
-        if isinstance(nested, dict):
-            param = nested.get("param")
-            if param:
-                return str(param)
-    response = getattr(error, "response", None)
-    if response is not None:
-        try:
-            data = response.json()
-        except Exception:
-            data = None
-        if isinstance(data, dict):
-            nested = data.get("error")
-            if isinstance(nested, dict):
-                param = nested.get("param")
-                if param:
-                    return str(param)
-        try:
-            text = response.text
-        except Exception:
-            text = None
-        if isinstance(text, str) and "response_format" in text:
-            return "response_format"
-    message = getattr(error, "message", None)
-    if isinstance(message, str) and "response_format" in message:
-        return "response_format"
-    if "response_format" in str(error):
-        return "response_format"
-    return None
-
-
-def _generate_photo_for_media(pm: PostMedia, prompt: str) -> str:
-    prompt = (prompt or "").strip()
-    if not prompt:
-        return pm.cache_path or ""
-    client = _client()
-    model = os.getenv("OPENAI_IMAGE_MODEL", "gpt-image-1")
-    size = os.getenv("OPENAI_IMAGE_SIZE", "1024x1024")
-    quality = os.getenv("OPENAI_IMAGE_QUALITY", "standard")
-    request_kwargs = {
-        "model": model,
-        "prompt": prompt,
-    }
-    if size:
-        request_kwargs["size"] = size
-    if quality:
-        request_kwargs["quality"] = quality
-
-    global _IMAGE_SUPPORTS_B64
-
-    response = None
-    if _IMAGE_SUPPORTS_B64:
-        try:
-            response = client.images.generate(
-                **request_kwargs,
-                response_format="b64_json",
-            )
-        except BadRequestError as exc:
-            if _extract_openai_error_param(exc) != "response_format":
-                raise
-            _IMAGE_SUPPORTS_B64 = False
-            response = client.images.generate(**request_kwargs)
-    if response is None:
-        response = client.images.generate(**request_kwargs)
-    if not response.data:
-        return pm.cache_path or ""
-    first_item = response.data[0]
-    image_data = getattr(first_item, "b64_json", None)
-    if isinstance(first_item, dict) and not image_data:
-        image_data = first_item.get("b64_json")
-    binary_content: bytes | None = None
-    if image_data:
-        binary_content = base64.b64decode(image_data)
-    else:
-        image_url = getattr(first_item, "url", None)
-        if isinstance(first_item, dict) and not image_url:
-            image_url = first_item.get("url")
-        if not image_url:
-            return pm.cache_path or ""
-        download = httpx.get(image_url, timeout=30, follow_redirects=True)
-        download.raise_for_status()
-        binary_content = download.content
-    if binary_content is None:
-        return pm.cache_path or ""
-    media_root = Path(settings.MEDIA_ROOT)
-    cache_dir = media_root / "cache"
-    os.makedirs(cache_dir, exist_ok=True)
-    fname = cache_dir / f"{pm.id}.png"
-    with open(fname, "wb") as fh:
-        fh.write(binary_content)
-    pm.cache_path = fname.as_posix()
-    pm.expires_at = _media_expiry_deadline()
-    pm.save(update_fields=["cache_path", "expires_at"])
-    return pm.cache_path
-
-
 def attach_media_from_payload(post: Post, media_payload: list[dict[str, Any]]):
     post.media.all().delete()
     for idx, item in enumerate(media_payload):
@@ -385,6 +303,9 @@ def attach_media_from_payload(post: Post, media_payload: list[dict[str, Any]]):
         if media_type not in {"photo", "video", "doc"}:
             continue
         url = str(item.get("url", "") or "").strip()
+        if not url:
+            logger.info("Pomijam media typu %s bez url dla posta %s", media_type, post.id)
+            continue
         has_spoiler = item.get("has_spoiler")
         if has_spoiler is None and media_type == "photo":
             has_spoiler = bool(getattr(post.channel, "auto_blur_default", False))
@@ -397,16 +318,20 @@ def attach_media_from_payload(post: Post, media_payload: list[dict[str, Any]]):
             order=idx,
             has_spoiler=has_spoiler,
         )
-        if url:
-            try:
-                cache_media(pm)
-            except Exception:
-                logger.exception("Nie udało się pobrać medium %s dla posta %s", pm.id, post.id)
-        elif media_type == "photo" and item.get("prompt"):
-            try:
-                _generate_photo_for_media(pm, item["prompt"])
-            except Exception:
-                logger.exception("Nie udało się wygenerować grafiki dla posta %s", post.id)
+        try:
+            cache_path = cache_media(pm)
+        except Exception:
+            logger.exception("Nie udało się pobrać medium %s dla posta %s", pm.id, post.id)
+            pm.delete()
+            continue
+        if not cache_path:
+            logger.info(
+                "Pomijam medium %s dla posta %s – brak cache po pobraniu (%s)",
+                pm.id,
+                post.id,
+                url,
+            )
+            pm.delete()
 
 
 def create_post_from_payload(channel: Channel, payload: dict[str, Any]) -> Post:
