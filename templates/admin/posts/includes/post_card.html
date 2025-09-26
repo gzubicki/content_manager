@@ -45,10 +45,14 @@
       <a href="{{ post.change_url }}" class="post-card__action--primary">Edytuj</a>
       <a href="{{ post.rewrite_url }}" class="post-card__action--secondary">GPT: korekta</a>
       {% if post.is_draft and post.approve_url %}
-        <form action="{{ post.approve_url }}" method="post">
-          {% csrf_token %}
-          <button type="submit" class="post-card__action--primary">Akceptuj</button>
-        </form>
+        <button
+          type="submit"
+          formmethod="post"
+          formaction="{{ post.approve_url }}"
+          class="post-card__action--primary"
+        >
+          Akceptuj
+        </button>
       {% else %}
         <a href="{{ post.reschedule_url }}" class="post-card__action--secondary">Zmień termin publikacji</a>
       {% endif %}

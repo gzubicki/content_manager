@@ -142,7 +142,11 @@ def _parse_gpt_payload(raw: str) -> dict[str, Any] | None:
 
 
 def gpt_generate_text(system_prompt: str, user_prompt: str, *, response_format: dict[str, Any] | None = None) -> str | None:
-    cli = _client()
+    try:
+        cli = _client()
+    except RuntimeError as exc:
+        logger.warning("Pomijam generowanie GPT: %s", exc)
+        return None
     try:
         model = os.getenv("OPENAI_MODEL", "gpt-4.1")
         temperature = float(os.getenv("OPENAI_TEMPERATURE", 0.2))
@@ -285,9 +289,10 @@ def gpt_rewrite_text(channel: Channel, text: str, editor_prompt: str) -> str:
     usr = (
         "Przepisz poniższy tekst zgodnie z zasadami i wytycznymi edytora. "
         "Zachowaj charakter kanału, wymagania dotyczące długości, emoji oraz stopki opisane w systemowym promptcie."
-        f"\n\n[Wytyczne edytora]: {editor_prompt}\n\n[Tekst]:\n{text}"
+
     )
-    return gpt_generate_text(sys, usr)
+    rewritten = gpt_generate_text(sys, usr)
+    return rewritten or text
 
 
 def _media_expiry_deadline():
@@ -352,19 +357,6 @@ def create_post_from_payload(channel: Channel, payload: dict[str, Any]) -> Post:
     if isinstance(media_items, list):
         attach_media_from_payload(post, media_items)
     return post
-
-
-def ensure_min_drafts(channel: Channel):
-    need = channel.draft_target_count - channel.posts.filter(status="DRAFT").count()
-    created = 0
-    for _ in range(max(0, need)):
-        payload = gpt_new_draft(channel)
-        if payload is None:
-            break
-        create_post_from_payload(channel, payload)
-        created += 1
-    return created
-
 def compute_dupe(post: Post) -> float:
     texts = Post.objects.filter(status="PUBLISHED").order_by("-id").values_list("text", flat=True)[:300]
     if not texts: return 0.0
@@ -385,7 +377,9 @@ def next_auto_slot(channel: Channel, dt=None):
     if candidate < start:
         candidate = start
     if candidate > end:
-        candidate = start + timezone.timedelta(days=1)
+        start += timezone.timedelta(days=1)
+        end += timezone.timedelta(days=1)
+        candidate = start
 
     used_slots = {
         timezone.localtime(dt, tz_waw)
@@ -398,13 +392,16 @@ def next_auto_slot(channel: Channel, dt=None):
     while candidate in used_slots:
         candidate += timezone.timedelta(minutes=step)
         safety_counter += 1
-        if candidate.time() > end.time() or safety_counter > (24 * 60 // step) + 1:
-            candidate = start + timezone.timedelta(days=1)
+        if candidate > end or safety_counter > (24 * 60 // step) + 1:
+            start += timezone.timedelta(days=1)
+            end += timezone.timedelta(days=1)
+            candidate = start
             safety_counter = 0
     return candidate
 
 def assign_auto_slot(post: Post):
-    if post.schedule_mode == "MANUAL": return
+    if post.schedule_mode == "MANUAL":
+        return
     post.scheduled_at = next_auto_slot(post.channel)
     post.dupe_score = compute_dupe(post)
     post.status = Post.Status.SCHEDULED
@@ -415,10 +412,13 @@ def approve_post(post: Post, user=None):
     """Mark a draft as approved and assign the next automatic publication slot."""
 
     post.status = Post.Status.APPROVED
+    post.schedule_mode = "AUTO"
     if user and getattr(user, "is_authenticated", False):
         post.approved_by = user
     post.scheduled_at = next_auto_slot(post.channel)
     post.dupe_score = compute_dupe(post)
+    if post.expires_at:
+        post.expires_at = None
     post.save()
     return post
 

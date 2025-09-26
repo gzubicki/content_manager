@@ -1,5 +1,7 @@
 import os
 from pathlib import Path
+from celery.schedules import crontab
+from django.utils.translation import gettext_lazy as _
 from dotenv import load_dotenv
 load_dotenv()
 
@@ -8,8 +10,15 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 SECRET_KEY = os.getenv("DJANGO_SECRET_KEY", "dev")
 DEBUG = bool(int(os.getenv("DEBUG", 1)))
 ALLOWED_HOSTS = os.getenv("ALLOWED_HOSTS", "*").split(",")
+LANGUAGE_CODE = os.getenv("LANGUAGE_CODE", "pl")
 TIME_ZONE = os.getenv("TIME_ZONE", "Europe/Warsaw")
+USE_I18N = True
+USE_L10N = True
 USE_TZ = True
+LANGUAGES = [
+    ("pl", _("Polski")),
+]
+LOCALE_PATHS = [BASE_DIR / "locale"]
 
 SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
 SESSION_ENGINE = os.getenv("SESSION_ENGINE", "django.contrib.sessions.backends.db")
@@ -77,14 +86,9 @@ DATABASES = {"default": dj_database_url.parse(os.getenv("DATABASE_URL", "sqlite:
 CELERY_BROKER_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
 CELERY_RESULT_BACKEND = CELERY_BROKER_URL
 
-from celery.schedules import crontab
-CELERY_BEAT_SCHEDULE = {
-    "ensure_drafts": {"task": "apps.posts.tasks.task_ensure_min_drafts", "schedule": 3600.0},
-    "publish_due": {"task": "apps.posts.tasks.task_publish_due", "schedule": 60.0},
-    "housekeeping": {"task": "apps.posts.tasks.task_housekeeping", "schedule": 3600.0},
-}
 
-PWA_APP_NAME = os.getenv("PWA_APP_NAME", "Content Manager – Panel")
+
+PWA_APP_NAME = os.getenv("PWA_APP_NAME", "Content Manager")
 PWA_THEME_COLOR = os.getenv("PWA_THEME_COLOR", "#111827")
 PWA_BACKGROUND_COLOR = os.getenv("PWA_BACKGROUND_COLOR", "#111827")
 PWA_START_URL = os.getenv("PWA_START_URL", "/admin/")
@@ -120,7 +124,7 @@ OPENAI_TEMPERATURE = float(os.getenv("OPENAI_TEMPERATURE", 0.3))
 CELERY_BEAT_SCHEDULE = {
     "ensure_drafts": {
         "task": "apps.posts.tasks.task_ensure_min_drafts",
-        "schedule": 3600.0,  # co godzinę
+        "schedule": 60.0,  # co minutę
     },
     "publish_due": {
         "task": "apps.posts.tasks.task_publish_due",

@@ -1,6 +1,6 @@
 {
-  "name": "Content Manager – Panel",
-  "short_name": "CM Panel",
+  "name": "Content Manager",
+  "short_name": "Content Manager",
   "start_url": "/admin/",
   "display": "standalone",
   "theme_color": "#111827",
