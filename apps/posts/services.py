@@ -1,7 +1,7 @@
 import json
 import logging
+import mimetypes
 import os
-import shutil
 import textwrap
 from pathlib import Path
 from urllib.parse import urlparse
@@ -438,17 +438,47 @@ def cache_media(pm: PostMedia):
     media_root = Path(settings.MEDIA_ROOT)
     cache_dir = media_root / "cache"
     os.makedirs(cache_dir, exist_ok=True)
+
     parsed = urlparse(url)
     path = parsed.path or ""
-    ext = os.path.splitext(path)[-1] or ".bin"
-    fname = cache_dir / f"{pm.id}{ext}"
+    ext = os.path.splitext(path)[-1].lower()
+    content: bytes | None = None
 
     if parsed.scheme in ("http", "https"):
-        with httpx.stream("GET", url, timeout=30) as r:
-            r.raise_for_status()
-            with open(fname, "wb") as f:
-                for chunk in r.iter_bytes():
-                    f.write(chunk)
+        timeout_s = float(os.getenv("MEDIA_DOWNLOAD_TIMEOUT", 30))
+        try:
+            response = httpx.get(url, timeout=timeout_s, follow_redirects=True)
+            response.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            logger.warning(
+                "HTTP %s przy pobieraniu %s dla media %s",
+                exc.response.status_code,
+                url,
+                pm.id,
+            )
+            return pm.cache_path or ""
+        except httpx.RequestError as exc:
+            logger.warning(
+                "Błąd sieci przy pobieraniu %s dla media %s: %s",
+                url,
+                pm.id,
+                exc,
+            )
+            return pm.cache_path or ""
+
+        content = response.content
+        if not content:
+            logger.warning("Pusty plik zwrócony z %s dla media %s", url, pm.id)
+            return pm.cache_path or ""
+
+        if not ext:
+            content_type = (response.headers.get("content-type") or "").split(";")[0].strip()
+            if content_type:
+                guessed = mimetypes.guess_extension(content_type)
+                if guessed:
+                    ext = guessed
+        if not ext:
+            ext = ".bin"
     else:
         src = path if parsed.scheme == "file" else url
         if not os.path.isabs(src):
@@ -457,7 +487,22 @@ def cache_media(pm: PostMedia):
                 src = candidate.as_posix()
         if not os.path.exists(src):
             return pm.cache_path or ""
-        shutil.copyfile(src, fname)
+        try:
+            with open(src, "rb") as fh:
+                content = fh.read()
+        except Exception:
+            logger.exception("Nie udało się odczytać pliku %s dla media %s", src, pm.id)
+            return pm.cache_path or ""
+        if not ext:
+            ext = os.path.splitext(src)[-1] or ".bin"
+
+    fname = cache_dir / f"{pm.id}{ext}"
+    try:
+        with open(fname, "wb") as fh:
+            fh.write(content)
+    except Exception:
+        logger.exception("Nie udało się zapisać pliku cache %s dla media %s", fname, pm.id)
+        return pm.cache_path or ""
 
     pm.cache_path = fname.as_posix()
     pm.expires_at = timezone.now() + timedelta(days=int(os.getenv("MEDIA_CACHE_TTL_DAYS", 7)))

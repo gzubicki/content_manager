@@ -68,28 +68,18 @@ class MediaHandlingTest(TestCase):
         pm = PostMedia.objects.create(post=self.post, type="photo", source_url="https://example.com/img.png")
         fake_bytes = b"binary\x00data"
 
-        def _fake_stream(method, url, timeout=30):
-            class _Resp:
-                def __init__(self, content: bytes):
-                    self._content = content
-                    self.headers = {}
+        class _Resp:
+            def __init__(self, content: bytes):
+                self.content = content
+                self.headers = {"content-type": "image/png"}
 
-                def __enter__(self):
-                    return self
+            def raise_for_status(self) -> None:
+                return None
 
-                def __exit__(self, exc_type, exc_val, exc_tb):
-                    return False
-
-                def iter_bytes(self):
-                    yield self._content
-
-                def raise_for_status(self):
-                    return None
-
-            return _Resp(fake_bytes)
-
-        with patch("apps.posts.services.httpx.stream", side_effect=_fake_stream):
+        with patch("apps.posts.services.httpx.get", return_value=_Resp(fake_bytes)) as mock_get:
             path = services.cache_media(pm)
+
+        mock_get.assert_called_once_with("https://example.com/img.png", timeout=30.0, follow_redirects=True)
 
         self.assertTrue(path)
         self.assertTrue(os.path.exists(path))
