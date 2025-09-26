@@ -409,7 +409,8 @@ def next_auto_slot(channel: Channel, dt=None):
     return candidate
 
 def assign_auto_slot(post: Post):
-    if post.schedule_mode == "MANUAL": return
+    if post.schedule_mode == "MANUAL":
+        return
     post.scheduled_at = next_auto_slot(post.channel)
     post.dupe_score = compute_dupe(post)
     post.status = Post.Status.SCHEDULED
@@ -420,10 +421,13 @@ def approve_post(post: Post, user=None):
     """Mark a draft as approved and assign the next automatic publication slot."""
 
     post.status = Post.Status.APPROVED
+    post.schedule_mode = "AUTO"
     if user and getattr(user, "is_authenticated", False):
         post.approved_by = user
     post.scheduled_at = next_auto_slot(post.channel)
     post.dupe_score = compute_dupe(post)
+    if post.expires_at:
+        post.expires_at = None
     post.save()
     return post
 
