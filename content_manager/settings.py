@@ -1,5 +1,7 @@
 import os
 from pathlib import Path
+
+from django.utils.translation import gettext_lazy as _
 from dotenv import load_dotenv
 load_dotenv()
 
@@ -8,8 +10,15 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 SECRET_KEY = os.getenv("DJANGO_SECRET_KEY", "dev")
 DEBUG = bool(int(os.getenv("DEBUG", 1)))
 ALLOWED_HOSTS = os.getenv("ALLOWED_HOSTS", "*").split(",")
+LANGUAGE_CODE = os.getenv("LANGUAGE_CODE", "pl")
 TIME_ZONE = os.getenv("TIME_ZONE", "Europe/Warsaw")
+USE_I18N = True
+USE_L10N = True
 USE_TZ = True
+LANGUAGES = [
+    ("pl", _("Polski")),
+]
+LOCALE_PATHS = [BASE_DIR / "locale"]
 
 SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
 SESSION_ENGINE = os.getenv("SESSION_ENGINE", "django.contrib.sessions.backends.db")
