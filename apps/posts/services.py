@@ -267,15 +267,30 @@ def _generate_photo_for_media(pm: PostMedia, prompt: str) -> str:
     response = client.images.generate(model=model, prompt=prompt, size=size, quality=quality)
     if not response.data:
         return pm.cache_path or ""
-    image_data = response.data[0].b64_json
-    if not image_data:
+    first_item = response.data[0]
+    image_data = getattr(first_item, "b64_json", None)
+    if isinstance(first_item, dict) and not image_data:
+        image_data = first_item.get("b64_json")
+    binary_content: bytes | None = None
+    if image_data:
+        binary_content = base64.b64decode(image_data)
+    else:
+        image_url = getattr(first_item, "url", None)
+        if isinstance(first_item, dict) and not image_url:
+            image_url = first_item.get("url")
+        if not image_url:
+            return pm.cache_path or ""
+        download = httpx.get(image_url, timeout=30, follow_redirects=True)
+        download.raise_for_status()
+        binary_content = download.content
+    if binary_content is None:
         return pm.cache_path or ""
     media_root = Path(settings.MEDIA_ROOT)
     cache_dir = media_root / "cache"
     os.makedirs(cache_dir, exist_ok=True)
     fname = cache_dir / f"{pm.id}.png"
     with open(fname, "wb") as fh:
-        fh.write(base64.b64decode(image_data))
+        fh.write(binary_content)
     pm.cache_path = fname.as_posix()
     pm.expires_at = _media_expiry_deadline()
     pm.save(update_fields=["cache_path", "expires_at"])
