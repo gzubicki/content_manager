@@ -1,4 +1,5 @@
 import base64
+import json
 import os
 import tempfile
 from dataclasses import dataclass
@@ -168,6 +169,44 @@ class GeneratePhotoFallbackTest(TestCase):
             "Unknown parameter: 'response_format'.",
             response=error_response,
             body=error_response.json(),
+        )
+        client = _FakeOpenAIClient(payload, side_effect=[bad_request, payload])
+
+        with patch("apps.posts.services._client", return_value=client), patch("apps.posts.services.httpx.get") as mock_get:
+            path = services._generate_photo_for_media(pm, "prompt")
+
+        self.addCleanup(self._cleanup_file, path)
+        pm.refresh_from_db()
+        self.assertTrue(path)
+        self.assertTrue(os.path.exists(path))
+        with open(path, "rb") as fh:
+            self.assertEqual(fh.read(), image_bytes)
+        mock_get.assert_not_called()
+        self.assertEqual(len(client.images.calls), 2)
+        first_call, second_call = client.images.calls
+        self.assertEqual(first_call.get("response_format"), "b64_json")
+        self.assertNotIn("response_format", second_call)
+
+    def test_retries_when_error_body_is_string(self) -> None:
+        pm = self._create_media()
+        image_bytes = b"string-body-bytes"
+        payload = _FakeImageResponse([
+            _FakeImageData(b64_json=base64.b64encode(image_bytes).decode("ascii"))
+        ])
+        error_payload = {
+            "error": {
+                "message": "Unknown parameter: 'response_format'.",
+                "param": "response_format",
+                "code": "unknown_parameter",
+            }
+        }
+        bad_request = BadRequestError(
+            "Unknown parameter: 'response_format'.",
+            response=httpx.Response(
+                status_code=400,
+                request=httpx.Request("POST", "https://api.openai.com/v1/images/generations"),
+            ),
+            body=json.dumps(error_payload),
         )
         client = _FakeOpenAIClient(payload, side_effect=[bad_request, payload])
 

@@ -270,8 +270,16 @@ def _extract_openai_error_param(error: BadRequestError) -> str | None:
     if param:
         return str(param)
     body = getattr(error, "body", None)
+    body_data: Any | None = None
     if isinstance(body, dict):
-        nested = body.get("error")
+        body_data = body
+    elif isinstance(body, (str, bytes)):
+        try:
+            body_data = json.loads(body)
+        except Exception:
+            body_data = None
+    if isinstance(body_data, dict):
+        nested = body_data.get("error")
         if isinstance(nested, dict):
             param = nested.get("param")
             if param:
@@ -288,6 +296,11 @@ def _extract_openai_error_param(error: BadRequestError) -> str | None:
                 param = nested.get("param")
                 if param:
                     return str(param)
+    message = getattr(error, "message", None)
+    if isinstance(message, str) and "response_format" in message:
+        return "response_format"
+    if "response_format" in str(error):
+        return "response_format"
     return None
 
 
