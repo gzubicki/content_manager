@@ -129,7 +129,7 @@ OPENAI_TEMPERATURE = float(os.getenv("OPENAI_TEMPERATURE", 0.3))
 CELERY_BEAT_SCHEDULE = {
     "ensure_drafts": {
         "task": "apps.posts.tasks.task_ensure_min_drafts",
-        "schedule": 3600.0,  # co godzinę
+        "schedule": 60.0,  # co minutę
     },
     "publish_due": {
         "task": "apps.posts.tasks.task_publish_due",
