@@ -1,4 +1,0 @@
-{% for subwidget in widget.subwidgets %}
-  {{ subwidget.as_widget(attrs={"type": "hidden", "data-flatpickr-hidden": "1"}) }}
-{% endfor %}
-<input type="text" name="{{ widget.combined_name }}" value="{{ widget.flatpickr_value }}" {{ widget.flat_attrs|safe }} data-flatpickr-name="{{ widget.name }}" data-flatpickr-date-input="{{ widget.date_id }}" data-flatpickr-time-input="{{ widget.time_id }}" />
