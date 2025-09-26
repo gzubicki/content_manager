@@ -1,5 +1,6 @@
 import json
 import os
+from collections.abc import Iterable
 from pathlib import Path
 from uuid import uuid4
 
@@ -11,6 +12,7 @@ from django.contrib.admin.widgets import AdminSplitDateTime
 from django.core.exceptions import PermissionDenied
 from django.core.serializers.json import DjangoJSONEncoder
 from django.core.files.storage import default_storage
+from django.db.models import Count, Q
 from django.shortcuts import get_object_or_404, redirect
 from django.template.response import TemplateResponse
 from django.urls import path, reverse
@@ -22,6 +24,33 @@ from . import services
 from .models import Channel, DraftPost, Post, PostMedia, ScheduledPost
 from .tasks import task_gpt_generate_for_channel, task_gpt_rewrite_post
 from .validators import validate_post_text_for_channel
+
+
+def enqueue_missing_drafts(channels: Iterable[Channel]) -> tuple[int, int]:
+    """Queue GPT draft generation tasks to reach configured targets.
+
+    Returns a tuple ``(queued_posts, affected_channels)``.
+    """
+
+    channel_ids = {ch.id for ch in channels if getattr(ch, "id", None)}
+    if not channel_ids:
+        return 0, 0
+
+    queued = 0
+    affected = 0
+    annotated_channels = (
+        Channel.objects.filter(id__in=channel_ids)
+        .annotate(draft_count=Count("posts", filter=Q(posts__status=Post.Status.DRAFT)))
+        .only("id", "draft_target_count")
+    )
+    for channel in annotated_channels:
+        need = max(channel.draft_target_count - (getattr(channel, "draft_count", 0) or 0), 0)
+        if not need:
+            continue
+        task_gpt_generate_for_channel.delay(channel.id, need)
+        queued += need
+        affected += 1
+    return queued, affected
 
 
 def media_public_url(media: PostMedia) -> str:
@@ -175,30 +204,34 @@ class PostMediaInline(admin.StackedInline):
 class ChannelAdmin(admin.ModelAdmin):
     list_display = ("id","name","slug","tg_channel_id","language","draft_target_count")
     search_fields = ("name","slug","tg_channel_id")
-    actions = ["act_fill_to_20","act_gpt_generate_20"]
+    actions = ["act_fill_to_target","act_gpt_fill_missing"]
+
+    def _handle_draft_fill_action(self, request, queryset, empty_message: str) -> None:
+        queued, affected = enqueue_missing_drafts(queryset)
+        if queued:
+            self.message_user(
+                request,
+                f"Zlecono wygenerowanie brakujących draftów (GPT) w tle dla {affected} kanał(ów) (łącznie {queued}).",
+                level=messages.INFO,
+            )
+        else:
+            self.message_user(request, empty_message, level=messages.WARNING)
 
     @admin.action(description="Uzupełnij drafty")
-    def act_fill_to_20(self, request, queryset):
-        queued = 0
-        for ch in queryset:
-            need = ch.draft_target_count - ch.posts.filter(status="DRAFT").count()
-            if need > 0:
-                task_gpt_generate_for_channel.delay(ch.id, need)
-                queued += need
-        self.message_user(
+    def act_fill_to_target(self, request, queryset):
+        self._handle_draft_fill_action(
             request,
-            ("Zlecono wygenerowanie %d draftów (GPT) w tle." % queued) if queued
-            else "Zaznaczone kanały mają już komplet draftów.",
-            level=messages.INFO if queued else messages.WARNING,
+            queryset,
+            "Zaznaczone kanały mają już komplet draftów.",
         )
 
-    @admin.action(description="GPT: wygeneruj 20 draftów (async)")
-    def act_gpt_generate_20(self, request, queryset):
-        n = 0
-        for ch in queryset:
-            task_gpt_generate_for_channel.delay(ch.id, 20)
-            n += 1
-        self.message_user(request, f"Zlecono generowanie GPT dla {n} kanał(ów) – sprawdź za chwilę DRAFTY.")
+    @admin.action(description="GPT: uzupełnij brakujące drafty (async)")
+    def act_gpt_fill_missing(self, request, queryset):
+        self._handle_draft_fill_action(
+            request,
+            queryset,
+            "Zaznaczone kanały mają już komplet draftów.",
+        )
 
 DEFAULT_REWRITE_PROMPT = "Popraw styl i klarowność, zachowaj treść i stopkę."
 
@@ -216,7 +249,7 @@ class BasePostAdmin(admin.ModelAdmin):
     form = PostForm
     list_display = ("id","channel","status","scheduled_at","created_at","dupe_score","short")
     list_filter = ("channel","status","schedule_mode")
-    actions = ["act_fill_to_20","act_approve","act_schedule","act_publish_now","act_delete"]
+    actions = ["act_fill_to_target","act_approve","act_schedule","act_publish_now","act_delete"]
     ordering = ("-created_at",)
     change_list_template = "admin/posts/post_cards.html"
     change_form_template = "admin/posts/change_form.html"
@@ -461,20 +494,21 @@ class BasePostAdmin(admin.ModelAdmin):
         return TemplateResponse(request, "admin/posts/rewrite.html", context)
 
     @admin.action(description="Uzupełnij drafty")
-    def act_fill_to_20(self, request, qs):
-        channels = {p.channel for p in qs} or set(Channel.objects.all())
-        queued = 0
-        for ch in channels:
-            need = ch.draft_target_count - ch.posts.filter(status="DRAFT").count()
-            if need > 0:
-                task_gpt_generate_for_channel.delay(ch.id, need)
-                queued += need
-        self.message_user(
-            request,
-            ("Zlecono wygenerowanie %d draftów (GPT) w tle." % queued) if queued
-            else "Kanały mają już komplet draftów.",
-            level=messages.INFO if queued else messages.WARNING,
-        )
+    def act_fill_to_target(self, request, qs):
+        channels = {p.channel for p in qs if getattr(p, "channel_id", None)} or set(Channel.objects.all())
+        queued, affected = enqueue_missing_drafts(channels)
+        if queued:
+            self.message_user(
+                request,
+                f"Zlecono wygenerowanie brakujących draftów (GPT) w tle dla {affected} kanał(ów) (łącznie {queued}).",
+                level=messages.INFO,
+            )
+        else:
+            self.message_user(
+                request,
+                "Kanały mają już komplet draftów.",
+                level=messages.WARNING,
+            )
 
     @admin.action(description="Zatwierdź i nadaj slot AUTO")
     def act_approve(self, request, qs):
