@@ -119,6 +119,11 @@ body.dark-theme .post-card {
   gap: 8px;
 }
 
+.post-card__actions form {
+  display: contents;
+  margin: 0;
+}
+
 .post-card__actions a,
 .post-card__actions button {
   display: inline-flex;
