@@ -44,7 +44,14 @@
     <div class="post-card__actions">
       <a href="{{ post.change_url }}" class="post-card__action--primary">Edytuj</a>
       <a href="{{ post.rewrite_url }}" class="post-card__action--secondary">GPT: korekta</a>
-      <a href="{{ post.reschedule_url }}" class="post-card__action--secondary">Zmień termin publikacji</a>
+      {% if post.is_draft and post.approve_url %}
+        <form action="{{ post.approve_url }}" method="post">
+          {% csrf_token %}
+          <button type="submit" class="post-card__action--primary">Akceptuj</button>
+        </form>
+      {% else %}
+        <a href="{{ post.reschedule_url }}" class="post-card__action--secondary">Zmień termin publikacji</a>
+      {% endif %}
       <a href="{{ post.delete_url }}" class="post-card__action--danger">Usuń</a>
     </div>
     {% if action_checkbox_name and cl.show_admin_actions %}

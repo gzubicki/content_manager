@@ -35,10 +35,22 @@ class Channel(models.Model):
     def __str__(self): return self.name
 
 class Post(models.Model):
-    STATUS = [(s, s) for s in ["DRAFT","APPROVED","SCHEDULED","PUBLISHED","REJECTED"]]
+    class Status(models.TextChoices):
+        DRAFT = "DRAFT", "DRAFT"
+        APPROVED = "APPROVED", "APPROVED"
+        SCHEDULED = "SCHEDULED", "SCHEDULED"
+        PUBLISHED = "PUBLISHED", "PUBLISHED"
+        REJECTED = "REJECTED", "REJECTED"
+
+    STATUS = Status.choices
     channel = models.ForeignKey(Channel, verbose_name="Kanał", related_name="posts", on_delete=models.CASCADE)
     text = models.TextField("Treść")
-    status = models.CharField("Status", max_length=16, choices=STATUS, default="DRAFT")
+    status = models.CharField(
+        "Status",
+        max_length=16,
+        choices=STATUS,
+        default=Status.DRAFT,
+    )
     scheduled_at = models.DateTimeField("Zaplanowano na", null=True, blank=True)
     schedule_mode = models.CharField("Tryb planowania", max_length=6, choices=[("AUTO","AUTO"),("MANUAL","MANUAL")], default="AUTO")
     created_at = models.DateTimeField("Utworzono", auto_now_add=True)
@@ -54,7 +66,7 @@ class Post(models.Model):
         verbose_name_plural = "Wpisy"
 
     def save(self, *a, **kw):
-        if self.status == "DRAFT" and not self.expires_at:
+        if self.status == self.Status.DRAFT and not self.expires_at:
             ttl = getattr(self.channel, "draft_ttl_days", 3)
             self.expires_at = timezone.now() + timezone.timedelta(days=ttl)
         super().save(*a, **kw)

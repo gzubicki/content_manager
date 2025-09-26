@@ -15,7 +15,7 @@ from django.utils import timezone
 from django.conf import settings
 from telegram import Bot
 from rapidfuzz import fuzz
-from .models import Post, PostMedia, Channel
+from .models import Channel, Post, PostMedia
 from dateutil import tz
 from typing import Any
 
@@ -360,7 +360,7 @@ def next_auto_slot(channel: Channel, dt=None):
 
     minute_block = (now.minute // step) * step
     candidate = now.replace(minute=minute_block, second=0, microsecond=0)
-    if now.minute % step != 0 or now.second or now.microsecond:
+    if candidate <= now:
         candidate += timezone.timedelta(minutes=step)
 
     if candidate < start:
@@ -371,7 +371,7 @@ def next_auto_slot(channel: Channel, dt=None):
     used_slots = {
         timezone.localtime(dt, tz_waw)
         for dt in channel.posts.filter(
-            status__in=["APPROVED", "SCHEDULED"],
+            status__in=[Post.Status.APPROVED, Post.Status.SCHEDULED],
             scheduled_at__isnull=False
         ).values_list("scheduled_at", flat=True)
     }
@@ -388,8 +388,20 @@ def assign_auto_slot(post: Post):
     if post.schedule_mode == "MANUAL": return
     post.scheduled_at = next_auto_slot(post.channel)
     post.dupe_score = compute_dupe(post)
-    post.status = "SCHEDULED"
+    post.status = Post.Status.SCHEDULED
     post.save()
+
+
+def approve_post(post: Post, user=None):
+    """Mark a draft as approved and assign the next automatic publication slot."""
+
+    post.status = Post.Status.APPROVED
+    if user and getattr(user, "is_authenticated", False):
+        post.approved_by = user
+    post.scheduled_at = next_auto_slot(post.channel)
+    post.dupe_score = compute_dupe(post)
+    post.save()
+    return post
 
 def purge_cache():
     for pm in PostMedia.objects.filter(expires_at__lt=timezone.now()):
