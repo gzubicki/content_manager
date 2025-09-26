@@ -39,9 +39,30 @@ def _client():
         _oai = OpenAI(api_key=key, max_retries=0, timeout=30)
     return _oai
 
+def _channel_constraints_prompt(ch: Channel) -> str:
+    rules: list[str] = []
+    language = (ch.language or "").strip()
+    if language:
+        rules.append(f"Piszesz w języku: {language}.")
+    rules.append(f"Limit długości tekstu: maksymalnie {ch.max_chars} znaków.")
+    rules.append(
+        f"Liczba emoji w treści: co najmniej {ch.emoji_min}, najwyżej {ch.emoji_max}."
+    )
+    footer = (ch.footer_text or "").strip()
+    if footer:
+        rules.append("Stopka kanału:")
+        rules.append(footer)
+    if ch.no_links_in_text:
+        rules.append("Nie dodawaj linków w treści posta.")
+    return "\n".join(rules)
+
+
 def _channel_system_prompt(ch: Channel) -> str:
-    return (ch.style_prompt or
-            "Piszesz WYŁĄCZNIE po polsku. 1–3 akapity, ⚡️ lead, bez linków, stopka w 2 liniach.")
+    base = (ch.style_prompt or "").strip()
+    rules = _channel_constraints_prompt(ch).strip()
+    if rules:
+        return f"{base}\n\nWytyczne kanału:\n{rules}"
+    return base
 
 
 def _strip_code_fence(raw: str) -> str:
@@ -201,8 +222,13 @@ def gpt_generate_post_payload(channel: Channel, article: dict[str, Any] | None =
         "do tematu (np. myśliwiec F-16 dla wiadomości o rakietach).",
         "Dla wideo/dokumentów zawsze podawaj pełny url.",
     ]
-    if channel.no_links_in_text:
-        instructions.append("Nie dodawaj linków w treści post_text.")
+    if channel.max_chars:
+        instructions.append(
+            "Długość odpowiedzi musi mieścić się w limicie znaków opisanym w systemowym promptcie."
+        )
+    instructions.append(
+        "Uwzględnij wymagania dotyczące emoji, stopki i zakazów opisane w systemowym promptcie."
+    )
     if article_context:
         instructions.append("Korzystaj z poniższych danych artykułu:")
         instructions.append(article_context)
@@ -218,9 +244,11 @@ def gpt_generate_post_payload(channel: Channel, article: dict[str, Any] | None =
 
 def gpt_rewrite_text(channel: Channel, text: str, editor_prompt: str) -> str:
     sys = _channel_system_prompt(channel)
-    usr = ("Przepisz poniższy tekst zgodnie z zasadami i wytycznymi edytora. "
-           "Zachowaj polski język, lead ⚡️, bez linków; nie usuwaj stopki kanału.\n\n"
-           f"[Wytyczne edytora]: {editor_prompt}\n\n[Tekst]:\n{text}")
+    usr = (
+        "Przepisz poniższy tekst zgodnie z zasadami i wytycznymi edytora. "
+        "Zachowaj charakter kanału, wymagania dotyczące długości, emoji oraz stopki opisane w systemowym promptcie."
+        f"\n\n[Wytyczne edytora]: {editor_prompt}\n\n[Tekst]:\n{text}"
+    )
     return gpt_generate_text(sys, usr)
 
 
