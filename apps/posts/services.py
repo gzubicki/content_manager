@@ -8,7 +8,14 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 import httpx
-from openai import OpenAI, RateLimitError, APIError, APIConnectionError, Timeout
+from openai import (
+    OpenAI,
+    RateLimitError,
+    APIError,
+    APIConnectionError,
+    Timeout,
+    BadRequestError,
+)
 
 from datetime import timedelta
 from django.utils import timezone
@@ -256,6 +263,34 @@ def _media_expiry_deadline():
     return timezone.now() + timedelta(days=int(os.getenv("MEDIA_CACHE_TTL_DAYS", 7)))
 
 
+def _extract_openai_error_param(error: BadRequestError) -> str | None:
+    """Return the parameter that caused a BadRequestError, if present."""
+
+    param = getattr(error, "param", None)
+    if param:
+        return str(param)
+    body = getattr(error, "body", None)
+    if isinstance(body, dict):
+        nested = body.get("error")
+        if isinstance(nested, dict):
+            param = nested.get("param")
+            if param:
+                return str(param)
+    response = getattr(error, "response", None)
+    if response is not None:
+        try:
+            data = response.json()
+        except Exception:
+            data = None
+        if isinstance(data, dict):
+            nested = data.get("error")
+            if isinstance(nested, dict):
+                param = nested.get("param")
+                if param:
+                    return str(param)
+    return None
+
+
 def _generate_photo_for_media(pm: PostMedia, prompt: str) -> str:
     prompt = (prompt or "").strip()
     if not prompt:
@@ -264,7 +299,24 @@ def _generate_photo_for_media(pm: PostMedia, prompt: str) -> str:
     model = os.getenv("OPENAI_IMAGE_MODEL", "gpt-image-1")
     size = os.getenv("OPENAI_IMAGE_SIZE", "1024x1024")
     quality = os.getenv("OPENAI_IMAGE_QUALITY", "standard")
-    response = client.images.generate(model=model, prompt=prompt, size=size, quality=quality)
+    request_kwargs = {
+        "model": model,
+        "prompt": prompt,
+    }
+    if size:
+        request_kwargs["size"] = size
+    if quality:
+        request_kwargs["quality"] = quality
+
+    try:
+        response = client.images.generate(
+            **request_kwargs,
+            response_format="b64_json",
+        )
+    except BadRequestError as exc:
+        if _extract_openai_error_param(exc) != "response_format":
+            raise
+        response = client.images.generate(**request_kwargs)
     if not response.data:
         return pm.cache_path or ""
     first_item = response.data[0]

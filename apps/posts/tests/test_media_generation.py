@@ -10,6 +10,7 @@ from django.test import TestCase, override_settings
 
 from apps.posts import services
 from apps.posts.models import Channel, Post, PostMedia
+from openai import BadRequestError
 
 
 @dataclass
@@ -27,18 +28,24 @@ class _FakeImageResponse:
 
 
 class _FakeImagesClient:
-    def __init__(self, response: _FakeImageResponse):
+    def __init__(self, response: _FakeImageResponse, *, side_effect: list[Any] | None = None):
         self._response = response
         self.calls: list[dict[str, Any]] = []
+        self._side_effects = list(side_effect or [])
 
     def generate(self, **kwargs: Any) -> _FakeImageResponse:
-        self.calls.append(kwargs)
+        self.calls.append(dict(kwargs))
+        if self._side_effects:
+            effect = self._side_effects.pop(0)
+            if isinstance(effect, Exception):
+                raise effect
+            return effect
         return self._response
 
 
 class _FakeOpenAIClient:
-    def __init__(self, response: _FakeImageResponse):
-        self.images = _FakeImagesClient(response)
+    def __init__(self, response: _FakeImageResponse, *, side_effect: list[Any] | None = None):
+        self.images = _FakeImagesClient(response, side_effect=side_effect)
 
 
 class _FakeHttpxResponse:
@@ -115,6 +122,8 @@ class GeneratePhotoFallbackTest(TestCase):
         with open(path, "rb") as fh:
             self.assertEqual(fh.read(), image_bytes)
         mock_get.assert_not_called()
+        self.assertEqual(len(client.images.calls), 1)
+        self.assertEqual(client.images.calls[0].get("response_format"), "b64_json")
 
     def test_downloads_image_following_redirects(self) -> None:
         pm = self._create_media()
@@ -141,3 +150,38 @@ class GeneratePhotoFallbackTest(TestCase):
         self.assertIsNotNone(redirecting_get.last_response)
         self.assertTrue(redirecting_get.last_response.history)
         self.assertEqual(redirecting_get.last_response.history[0].status_code, 302)
+        self.assertEqual(len(client.images.calls), 1)
+        self.assertEqual(client.images.calls[0].get("response_format"), "b64_json")
+
+    def test_retries_without_response_format_when_not_supported(self) -> None:
+        pm = self._create_media()
+        image_bytes = b"retry-bytes"
+        payload = _FakeImageResponse([
+            _FakeImageData(b64_json=base64.b64encode(image_bytes).decode("ascii"))
+        ])
+        error_response = httpx.Response(
+            status_code=400,
+            request=httpx.Request("POST", "https://api.openai.com/v1/images/generations"),
+            json={"error": {"message": "Unknown parameter: 'response_format'.", "param": "response_format", "code": "unknown_parameter"}},
+        )
+        bad_request = BadRequestError(
+            "Unknown parameter: 'response_format'.",
+            response=error_response,
+            body=error_response.json(),
+        )
+        client = _FakeOpenAIClient(payload, side_effect=[bad_request, payload])
+
+        with patch("apps.posts.services._client", return_value=client), patch("apps.posts.services.httpx.get") as mock_get:
+            path = services._generate_photo_for_media(pm, "prompt")
+
+        self.addCleanup(self._cleanup_file, path)
+        pm.refresh_from_db()
+        self.assertTrue(path)
+        self.assertTrue(os.path.exists(path))
+        with open(path, "rb") as fh:
+            self.assertEqual(fh.read(), image_bytes)
+        mock_get.assert_not_called()
+        self.assertEqual(len(client.images.calls), 2)
+        first_call, second_call = client.images.calls
+        self.assertEqual(first_call.get("response_format"), "b64_json")
+        self.assertNotIn("response_format", second_call)
