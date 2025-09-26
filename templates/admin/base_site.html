@@ -1,5 +1,11 @@
 {% extends "admin/base.html" %}
 {% load static %}
+{% block title %}Content Manager{% endblock %}
+
+{% block branding %}
+<h1 id="site-name"><a href="{% url 'admin:index' %}">Content Manager</a></h1>
+{% endblock %}
+
 {% block extrahead %}
 <link rel="manifest" href="/manifest.webmanifest">
 <meta name="theme-color" content="#111827">
