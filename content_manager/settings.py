@@ -84,7 +84,7 @@ CELERY_BEAT_SCHEDULE = {
     "housekeeping": {"task": "apps.posts.tasks.task_housekeeping", "schedule": 3600.0},
 }
 
-PWA_APP_NAME = os.getenv("PWA_APP_NAME", "Content Manager – Panel")
+PWA_APP_NAME = os.getenv("PWA_APP_NAME", "Content Manager")
 PWA_THEME_COLOR = os.getenv("PWA_THEME_COLOR", "#111827")
 PWA_BACKGROUND_COLOR = os.getenv("PWA_BACKGROUND_COLOR", "#111827")
 PWA_START_URL = os.getenv("PWA_START_URL", "/admin/")
