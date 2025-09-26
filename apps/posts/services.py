@@ -1,4 +1,5 @@
 import base64
+import binascii
 import json
 import logging
 import os
@@ -264,18 +265,42 @@ def _generate_photo_for_media(pm: PostMedia, prompt: str) -> str:
     model = os.getenv("OPENAI_IMAGE_MODEL", "gpt-image-1")
     size = os.getenv("OPENAI_IMAGE_SIZE", "1024x1024")
     quality = os.getenv("OPENAI_IMAGE_QUALITY", "standard")
-    response = client.images.generate(model=model, prompt=prompt, size=size, quality=quality)
-    if not response.data:
+    response = client.images.generate(
+        model=model,
+        prompt=prompt,
+        size=size,
+        quality=quality,
+        response_format="b64_json",
+    )
+    if not getattr(response, "data", None):
         return pm.cache_path or ""
-    image_data = response.data[0].b64_json
-    if not image_data:
+    first_item = response.data[0]
+    image_bytes: bytes | None = None
+    image_data = getattr(first_item, "b64_json", None)
+    if image_data:
+        try:
+            image_bytes = base64.b64decode(image_data)
+        except (ValueError, binascii.Error):
+            logger.exception("Nie udało się zdekodować obrazu w base64 dla media %s", pm.id)
+            image_bytes = None
+    if image_bytes is None:
+        image_url = getattr(first_item, "url", None)
+        if image_url:
+            try:
+                download = httpx.get(image_url, timeout=30)
+                download.raise_for_status()
+                image_bytes = download.content
+            except httpx.HTTPError:
+                logger.exception("Nie udało się pobrać obrazu z URL dla media %s", pm.id)
+                image_bytes = None
+    if not image_bytes:
         return pm.cache_path or ""
     media_root = Path(settings.MEDIA_ROOT)
     cache_dir = media_root / "cache"
     os.makedirs(cache_dir, exist_ok=True)
     fname = cache_dir / f"{pm.id}.png"
     with open(fname, "wb") as fh:
-        fh.write(base64.b64decode(image_data))
+        fh.write(image_bytes)
     pm.cache_path = fname.as_posix()
     pm.expires_at = _media_expiry_deadline()
     pm.save(update_fields=["cache_path", "expires_at"])
