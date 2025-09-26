@@ -98,6 +98,7 @@ class GeneratePhotoFallbackTest(TestCase):
         self.addCleanup(override.disable)
         self.channel = Channel.objects.create(name="Kanał", slug="kanal", tg_channel_id="@kanal")
         self.post = Post.objects.create(channel=self.channel, text="Treść")
+        services._IMAGE_SUPPORTS_B64 = True
 
     def _create_media(self) -> PostMedia:
         return PostMedia.objects.create(post=self.post, type="photo", source_url="")
@@ -224,3 +225,52 @@ class GeneratePhotoFallbackTest(TestCase):
         first_call, second_call = client.images.calls
         self.assertEqual(first_call.get("response_format"), "b64_json")
         self.assertNotIn("response_format", second_call)
+
+    def test_disables_base64_after_first_failure(self) -> None:
+        pm_first = self._create_media()
+        pm_second = self._create_media()
+        image_bytes = b"subsequent-call"
+        payload = _FakeImageResponse([
+            _FakeImageData(b64_json=base64.b64encode(image_bytes).decode("ascii"))
+        ])
+        error_payload = {
+            "error": {
+                "message": "Unknown parameter: 'response_format'.",
+                "param": "response_format",
+                "code": "unknown_parameter",
+            }
+        }
+        error_response = httpx.Response(
+            status_code=400,
+            request=httpx.Request("POST", "https://api.openai.com/v1/images/generations"),
+            json=error_payload,
+        )
+        bad_request = BadRequestError(
+            "Unknown parameter: 'response_format'.",
+            response=error_response,
+            body=error_payload,
+        )
+        client = _FakeOpenAIClient(payload, side_effect=[bad_request, payload, payload])
+
+        with patch("apps.posts.services._client", return_value=client), patch("apps.posts.services.httpx.get") as mock_get:
+            first_path = services._generate_photo_for_media(pm_first, "prompt")
+            second_path = services._generate_photo_for_media(pm_second, "prompt")
+
+        self.addCleanup(self._cleanup_file, first_path)
+        self.addCleanup(self._cleanup_file, second_path)
+        pm_first.refresh_from_db()
+        pm_second.refresh_from_db()
+        self.assertTrue(first_path)
+        self.assertTrue(second_path)
+        self.assertTrue(os.path.exists(first_path))
+        self.assertTrue(os.path.exists(second_path))
+        with open(first_path, "rb") as fh:
+            self.assertEqual(fh.read(), image_bytes)
+        with open(second_path, "rb") as fh:
+            self.assertEqual(fh.read(), image_bytes)
+        mock_get.assert_not_called()
+        self.assertEqual(len(client.images.calls), 3)
+        first_call, second_call, third_call = client.images.calls
+        self.assertEqual(first_call.get("response_format"), "b64_json")
+        self.assertNotIn("response_format", second_call)
+        self.assertNotIn("response_format", third_call)

@@ -37,6 +37,7 @@ def _bot_for(channel: Channel):
     return Bot(token=token)
 
 _oai = None
+_IMAGE_SUPPORTS_B64: bool = True
 def _client():
     global _oai
     if _oai is None:
@@ -296,6 +297,12 @@ def _extract_openai_error_param(error: BadRequestError) -> str | None:
                 param = nested.get("param")
                 if param:
                     return str(param)
+        try:
+            text = response.text
+        except Exception:
+            text = None
+        if isinstance(text, str) and "response_format" in text:
+            return "response_format"
     message = getattr(error, "message", None)
     if isinstance(message, str) and "response_format" in message:
         return "response_format"
@@ -321,14 +328,21 @@ def _generate_photo_for_media(pm: PostMedia, prompt: str) -> str:
     if quality:
         request_kwargs["quality"] = quality
 
-    try:
-        response = client.images.generate(
-            **request_kwargs,
-            response_format="b64_json",
-        )
-    except BadRequestError as exc:
-        if _extract_openai_error_param(exc) != "response_format":
-            raise
+    global _IMAGE_SUPPORTS_B64
+
+    response = None
+    if _IMAGE_SUPPORTS_B64:
+        try:
+            response = client.images.generate(
+                **request_kwargs,
+                response_format="b64_json",
+            )
+        except BadRequestError as exc:
+            if _extract_openai_error_param(exc) != "response_format":
+                raise
+            _IMAGE_SUPPORTS_B64 = False
+            response = client.images.generate(**request_kwargs)
+    if response is None:
         response = client.images.generate(**request_kwargs)
     if not response.data:
         return pm.cache_path or ""
