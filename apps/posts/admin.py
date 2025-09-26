@@ -177,7 +177,7 @@ class ChannelAdmin(admin.ModelAdmin):
     search_fields = ("name","slug","tg_channel_id")
     actions = ["act_fill_to_20","act_gpt_generate_20"]
 
-    @admin.action(description="Uzupełnij do 20 (zaznaczone kanały)")
+    @admin.action(description="Uzupełnij drafty")
     def act_fill_to_20(self, request, queryset):
         queued = 0
         for ch in queryset:
@@ -451,7 +451,7 @@ class BasePostAdmin(admin.ModelAdmin):
         }
         return TemplateResponse(request, "admin/posts/rewrite.html", context)
 
-    @admin.action(description="Uzupełnij do 20 (bieżący kanał / wszystkie jeśli brak selekcji)")
+    @admin.action(description="Uzupełnij drafty")
     def act_fill_to_20(self, request, qs):
         channels = {p.channel for p in qs} or set(Channel.objects.all())
         queued = 0
