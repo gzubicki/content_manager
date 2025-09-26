@@ -7,6 +7,7 @@ from telegram import InputMediaPhoto, InputMediaVideo, InputMediaDocument
 
 from .models import Post, Channel
 from . import services
+from .drafts import iter_missing_draft_requirements
 from openai import RateLimitError, APIError, APIConnectionError, APITimeoutError
 
 
@@ -15,8 +16,19 @@ logger = logging.getLogger(__name__)
 
 @shared_task
 def task_ensure_min_drafts():
-    for ch in Channel.objects.all():
-        services.ensure_min_drafts(ch)
+    queued = 0
+    affected = 0
+    for channel_id, need in iter_missing_draft_requirements():
+        task_gpt_generate_for_channel.delay(channel_id, need)
+        queued += need
+        affected += 1
+    if affected:
+        logger.info(
+            "Queued %s GPT draft(s) for %s channel(s) via ensure_min_drafts.",
+            queued,
+            affected,
+        )
+    return {"queued": queued, "channels": affected}
 
 @shared_task
 def task_housekeeping():

@@ -12,7 +12,6 @@ from django.contrib.admin.widgets import AdminSplitDateTime
 from django.core.exceptions import PermissionDenied
 from django.core.serializers.json import DjangoJSONEncoder
 from django.core.files.storage import default_storage
-from django.db.models import Count, Q
 from django.shortcuts import get_object_or_404, redirect
 from django.template.response import TemplateResponse
 from django.urls import path, reverse
@@ -23,6 +22,7 @@ from django.utils.html import format_html
 from . import services
 from .models import Channel, DraftPost, Post, PostMedia, ScheduledPost
 from .tasks import task_gpt_generate_for_channel, task_gpt_rewrite_post
+from .drafts import iter_missing_draft_requirements
 from .validators import validate_post_text_for_channel
 
 
@@ -32,22 +32,10 @@ def enqueue_missing_drafts(channels: Iterable[Channel]) -> tuple[int, int]:
     Returns a tuple ``(queued_posts, affected_channels)``.
     """
 
-    channel_ids = {ch.id for ch in channels if getattr(ch, "id", None)}
-    if not channel_ids:
-        return 0, 0
-
     queued = 0
     affected = 0
-    annotated_channels = (
-        Channel.objects.filter(id__in=channel_ids)
-        .annotate(draft_count=Count("posts", filter=Q(posts__status=Post.Status.DRAFT)))
-        .only("id", "draft_target_count")
-    )
-    for channel in annotated_channels:
-        need = max(channel.draft_target_count - (getattr(channel, "draft_count", 0) or 0), 0)
-        if not need:
-            continue
-        task_gpt_generate_for_channel.delay(channel.id, need)
+    for channel_id, need in iter_missing_draft_requirements(channels):
+        task_gpt_generate_for_channel.delay(channel_id, need)
         queued += need
         affected += 1
     return queued, affected

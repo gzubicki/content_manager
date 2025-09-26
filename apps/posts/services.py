@@ -357,19 +357,6 @@ def create_post_from_payload(channel: Channel, payload: dict[str, Any]) -> Post:
     if isinstance(media_items, list):
         attach_media_from_payload(post, media_items)
     return post
-
-
-def ensure_min_drafts(channel: Channel):
-    need = channel.draft_target_count - channel.posts.filter(status="DRAFT").count()
-    created = 0
-    for _ in range(max(0, need)):
-        payload = gpt_new_draft(channel)
-        if payload is None:
-            break
-        create_post_from_payload(channel, payload)
-        created += 1
-    return created
-
 def compute_dupe(post: Post) -> float:
     texts = Post.objects.filter(status="PUBLISHED").order_by("-id").values_list("text", flat=True)[:300]
     if not texts: return 0.0
