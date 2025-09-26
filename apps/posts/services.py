@@ -390,7 +390,9 @@ def next_auto_slot(channel: Channel, dt=None):
     if candidate < start:
         candidate = start
     if candidate > end:
-        candidate = start + timezone.timedelta(days=1)
+        start += timezone.timedelta(days=1)
+        end += timezone.timedelta(days=1)
+        candidate = start
 
     used_slots = {
         timezone.localtime(dt, tz_waw)
@@ -403,8 +405,10 @@ def next_auto_slot(channel: Channel, dt=None):
     while candidate in used_slots:
         candidate += timezone.timedelta(minutes=step)
         safety_counter += 1
-        if candidate.time() > end.time() or safety_counter > (24 * 60 // step) + 1:
-            candidate = start + timezone.timedelta(days=1)
+        if candidate > end or safety_counter > (24 * 60 // step) + 1:
+            start += timezone.timedelta(days=1)
+            end += timezone.timedelta(days=1)
+            candidate = start
             safety_counter = 0
     return candidate
 
