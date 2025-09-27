@@ -157,7 +157,9 @@
       const localeName = input.getAttribute("data-locale") || "pl";
       const minuteAttr = input.getAttribute("data-minute-step");
       const minuteIncrement = minuteAttr ? parseInt(minuteAttr, 10) || 5 : 5;
-      const locale = window.flatpickr.l10ns && window.flatpickr.l10ns[localeName] ? window.flatpickr.l10ns[localeName] : undefined;
+      const locale = window.flatpickr.l10ns && window.flatpickr.l10ns[localeName]
+        ? window.flatpickr.l10ns[localeName]
+        : undefined;
 
       const syncDisplay = (instance) => {
         const date = instance.selectedDates && instance.selectedDates[0] ? instance.selectedDates[0] : null;
