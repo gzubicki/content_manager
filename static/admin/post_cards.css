@@ -5,6 +5,28 @@
   margin-top: 1.5rem;
 }
 
+.changelist-filter-actions {
+  margin-bottom: 12px;
+}
+
+.changelist-filter-actions .button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 12px;
+  border-radius: 6px;
+  text-decoration: none;
+  font-weight: 600;
+  background: rgba(148, 163, 184, 0.15);
+  color: #0f172a;
+  border: 1px solid rgba(148, 163, 184, 0.35);
+  transition: background 0.2s ease, color 0.2s ease, border 0.2s ease;
+}
+
+.changelist-filter-actions .button:hover {
+  background: rgba(148, 163, 184, 0.3);
+}
+
 .post-card {
   position: relative;
   background: var(--card-bg, #0f172a);
