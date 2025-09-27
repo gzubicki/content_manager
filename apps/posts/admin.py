@@ -1,6 +1,7 @@
 import json
 import os
 from collections.abc import Iterable
+from datetime import datetime
 from pathlib import Path
 from uuid import uuid4
 
@@ -8,7 +9,6 @@ from django import forms
 from django.conf import settings
 from django.contrib import admin, messages
 from django.contrib.admin import helpers
-from django.contrib.admin.widgets import AdminSplitDateTime
 from django.core.exceptions import PermissionDenied
 from django.core.serializers.json import DjangoJSONEncoder
 from django.core.files.storage import default_storage
@@ -21,6 +21,12 @@ from django.utils.html import format_html
 
 from . import services
 from .models import Channel, DraftPost, Post, PostMedia, ScheduledPost
+from .widgets import (
+    DATETIME_DISPLAY_FORMAT,
+    DATETIME_INPUT_FORMATS,
+    DateTimePickerWidget,
+    PostTextWidget,
+)
 from .tasks import task_gpt_generate_for_channel, task_gpt_rewrite_post
 from .drafts import iter_missing_draft_requirements
 from .validators import validate_post_text_for_channel
@@ -56,16 +62,31 @@ def media_public_url(media: PostMedia) -> str:
 
 
 
+def _format_schedule_display(raw_value: str) -> str:
+    raw = (raw_value or "").strip()
+    if not raw:
+        return ""
+    for fmt in DATETIME_INPUT_FORMATS:
+        try:
+            parsed = datetime.strptime(raw, fmt)
+        except ValueError:
+            continue
+        return parsed.strftime(DATETIME_DISPLAY_FORMAT)
+    return raw
+
+
+
 class RescheduleForm(forms.Form):
     schedule_mode = forms.ChoiceField(
         label="Tryb planowania",
         choices=Post._meta.get_field("schedule_mode").choices,
         help_text="Wybierz AUTO, aby nadać termin zgodnie z harmonogramem kanału.",
     )
-    scheduled_at = forms.SplitDateTimeField(
+    scheduled_at = forms.DateTimeField(
         label="Data publikacji",
         required=False,
-        widget=AdminSplitDateTime(),
+        input_formats=DATETIME_INPUT_FORMATS,
+        widget=DateTimePickerWidget(),
         help_text="Dla trybu ręcznego ustaw dokładną datę i godzinę publikacji.",
     )
 
@@ -82,6 +103,20 @@ class PostForm(forms.ModelForm):
     class Meta:
         model = Post
         fields = ["channel","text","status","scheduled_at","schedule_mode"]
+        widgets = {
+            "text": PostTextWidget(
+                attrs={
+                    "data-editor-mode": "post",
+                    "data-editor-placeholder": "Napisz treść wpisu…",
+                }
+            ),
+            "scheduled_at": DateTimePickerWidget(),
+        }
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        if "scheduled_at" in self.fields:
+            self.fields["scheduled_at"].input_formats = DATETIME_INPUT_FORMATS
 
     def clean(self):
         cleaned = super().clean()
@@ -228,7 +263,13 @@ class RewritePromptForm(forms.Form):
     prompt = forms.CharField(
         label="Dodatkowy prompt dla GPT",
         required=False,
-        widget=forms.Textarea(attrs={"rows": 4}),
+        widget=PostTextWidget(
+            attrs={
+                "rows": 6,
+                "data-editor-mode": "prompt",
+                "data-editor-placeholder": "Opcjonalne dodatkowe wskazówki dla modelu GPT…",
+            }
+        ),
         help_text="Pozostaw puste, aby użyć domyślnej korekty stylu.",
     )
 
@@ -324,10 +365,13 @@ class BasePostAdmin(admin.ModelAdmin):
             text_value = obj.text
 
         scheduled_display = ""
-        if form_data and (form_data.get("scheduled_at_0") or form_data.get("scheduled_at_1")):
-            date_part = (form_data.get("scheduled_at_0") or "").strip()
-            time_part = (form_data.get("scheduled_at_1") or "").strip()
-            scheduled_display = f"{date_part} {time_part}".strip()
+        if form_data:
+            scheduled_raw = (form_data.get("scheduled_at") or "").strip()
+            if not scheduled_raw:
+                date_part = (form_data.get("scheduled_at_0") or "").strip()
+                time_part = (form_data.get("scheduled_at_1") or "").strip()
+                scheduled_raw = f"{date_part} {time_part}".strip()
+            scheduled_display = _format_schedule_display(scheduled_raw)
         elif obj and obj.scheduled_at:
             scheduled_display = date_format(timezone.localtime(obj.scheduled_at), "d.m.Y H:i")
 

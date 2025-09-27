@@ -113,6 +113,11 @@ body.dark-theme .post-card {
   justify-content: space-between;
 }
 
+.post-card__footer::after {
+  content: "";
+  flex: 1 1 160px;
+}
+
 .post-card__actions {
   display: flex;
   flex-wrap: wrap;
@@ -183,5 +188,28 @@ body.dark-theme .post-card {
 @media (max-width: 960px) {
   .post-card-grid {
     grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 768px) {
+  .post-card__footer {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 14px;
+  }
+  .post-card__footer::after {
+    display: none;
+  }
+  .post-card__actions {
+    width: 100%;
+    justify-content: stretch;
+  }
+  .post-card__actions a,
+  .post-card__actions button {
+    flex: 1 1 100%;
+    justify-content: center;
+  }
+  .post-card__selection {
+    justify-content: center;
   }
 }

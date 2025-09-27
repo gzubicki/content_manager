@@ -7,11 +7,20 @@
 {% endblock %}
 
 {% block extrahead %}
+{{ block.super }}
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <link rel="manifest" href="/manifest.webmanifest">
 <meta name="theme-color" content="#111827">
 <script>if ("serviceWorker" in navigator) navigator.serviceWorker.register("/sw.js");</script>
+<link href="{% static 'admin/vendor/quill/quill.snow.css' %}" rel="stylesheet">
+<link href="{% static 'admin/vendor/flatpickr/flatpickr.min.css' %}" rel="stylesheet">
+<link href="{% static 'admin/admin_enhancements.css' %}" rel="stylesheet">
 <link href="{% static 'admin/emoji.css' %}" rel="stylesheet">
 <link href="{% static 'admin/telegram_preview.css' %}" rel="stylesheet">
+<script defer src="{% static 'admin/vendor/quill/quill.min.js' %}"></script>
+<script defer src="{% static 'admin/vendor/flatpickr/flatpickr.min.js' %}"></script>
+<script defer src="{% static 'admin/vendor/flatpickr/l10n-pl.js' %}"></script>
+<script defer src="{% static 'admin/admin_enhancements.js' %}"></script>
 <script src="https://cdn.jsdelivr.net/npm/emoji-picker-element@^1/index.js"></script>
 <script defer src="{% static 'admin/emoji-init.js' %}"></script>
 <script defer src="{% static 'admin/telegram_preview.js' %}"></script>

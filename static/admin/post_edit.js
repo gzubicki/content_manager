@@ -102,13 +102,15 @@
       }
     }
 
-    const textInput = document.getElementById("id_text");
+    const textInput = document.querySelector("[data-post-text-source]");
     if (textInput){
-      state.text = textInput.value || "";
-      textInput.addEventListener("input", function(){
-        state.text = this.value;
+      const syncText = function(){
+        state.text = textInput.value || "";
         render();
-      });
+      };
+      syncText();
+      textInput.addEventListener("input", syncText);
+      textInput.addEventListener("change", syncText);
     }
 
     const channelSelect = document.getElementById("id_channel");
@@ -145,19 +147,19 @@
       scheduleModeSelect.addEventListener("change", updateMode);
     }
 
-    const scheduleDate = document.getElementById("id_scheduled_at_0");
-    const scheduleTime = document.getElementById("id_scheduled_at_1");
+    const scheduleInput = document.querySelector("[data-post-datetime-source]");
     const updateScheduled = function(){
-      const dateVal = scheduleDate ? scheduleDate.value.trim() : "";
-      const timeVal = scheduleTime ? scheduleTime.value.trim() : "";
-      state.scheduledDisplay = (dateVal + " " + timeVal).trim();
+      if (!scheduleInput){
+        render();
+        return;
+      }
+      const displayValue = scheduleInput.dataset.displayValue || scheduleInput.value || "";
+      state.scheduledDisplay = displayValue.trim();
       render();
     };
-    if (scheduleDate){
-      scheduleDate.addEventListener("input", updateScheduled);
-    }
-    if (scheduleTime){
-      scheduleTime.addEventListener("input", updateScheduled);
+    if (scheduleInput){
+      scheduleInput.addEventListener("input", updateScheduled);
+      scheduleInput.addEventListener("change", updateScheduled);
     }
     updateScheduled();
 

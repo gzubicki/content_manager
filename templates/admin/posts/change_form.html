@@ -97,13 +97,18 @@
       </form>
     </div>
     <aside class="post-edit__preview">
-      <div class="post-edit__preview-header">
-        <h2>Podgląd wpisu</h2>
-        <p>Aktualizuje się na bieżąco podczas edycji.</p>
-      </div>
-      <div class="post-edit__preview-body" data-post-preview-card>
-        {% include "admin/posts/includes/change_preview_card.html" with preview=preview %}
-      </div>
+      <details class="post-edit__preview-panel" data-preview-panel open>
+        <summary class="post-edit__preview-summary">
+          <div class="post-edit__preview-header">
+            <h2>Podgląd wpisu</h2>
+            <p>Aktualizuje się na bieżąco podczas edycji.</p>
+          </div>
+          <span class="post-edit__preview-summary-icon" aria-hidden="true"></span>
+        </summary>
+        <div class="post-edit__preview-body" data-post-preview-card aria-live="polite">
+          {% include "admin/posts/includes/change_preview_card.html" with preview=preview %}
+        </div>
+      </details>
       <script type="application/json" id="post-preview-initial-media">{{ preview_media_json|default:"[]"|safe }}</script>
     </aside>
   </div>

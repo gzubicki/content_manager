@@ -10,13 +10,15 @@
   <div id="content" class="content">
     <h1>{{ title }}</h1>
     <div id="content-main">
-      <form method="post" novalidate>
+      <form method="post" novalidate class="admin-form">
         {% csrf_token %}
         <fieldset class="module aligned">
-          <div class="form-row field-prompt">
+          <div class="form-row field-prompt admin-form__row">
             {{ form.prompt.errors }}
             <label for="{{ form.prompt.id_for_label }}">{{ form.prompt.label }}:</label>
-            {{ form.prompt }}
+            <div class="admin-form__control">
+              {{ form.prompt }}
+            </div>
             {% if form.prompt.help_text %}<p class="help">{{ form.prompt.help_text }}</p>{% endif %}
             {% if default_prompt %}
               <p class="help">Domyślny prompt: <code>{{ default_prompt }}</code></p>

@@ -10,19 +10,23 @@
   <div id="content" class="content">
     <h1>{{ title }}</h1>
     <div id="content-main">
-      <form method="post" novalidate>
+      <form method="post" novalidate class="admin-form">
         {% csrf_token %}
         <fieldset class="module aligned">
-          <div class="form-row field-schedule_mode">
+          <div class="form-row field-schedule_mode admin-form__row">
             {{ form.schedule_mode.errors }}
             <label for="{{ form.schedule_mode.id_for_label }}">{{ form.schedule_mode.label }}:</label>
-            {{ form.schedule_mode }}
+            <div class="admin-form__control">
+              {{ form.schedule_mode }}
+            </div>
             {% if form.schedule_mode.help_text %}<p class="help">{{ form.schedule_mode.help_text }}</p>{% endif %}
           </div>
-          <div class="form-row field-scheduled_at">
+          <div class="form-row field-scheduled_at admin-form__row">
             {{ form.scheduled_at.errors }}
             <label for="{{ form.scheduled_at.id_for_label }}">{{ form.scheduled_at.label }}:</label>
-            {{ form.scheduled_at }}
+            <div class="admin-form__control">
+              {{ form.scheduled_at }}
+            </div>
             {% if form.scheduled_at.help_text %}<p class="help">{{ form.scheduled_at.help_text }}</p>{% endif %}
           </div>
         </fieldset>
