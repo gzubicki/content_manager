@@ -147,34 +147,17 @@
 
     const scheduleDate = document.getElementById("id_scheduled_at_0");
     const scheduleTime = document.getElementById("id_scheduled_at_1");
-    const scheduleCombined = document.getElementById("id_scheduled_at_flatpickr") || document.querySelector('.js-datetime-picker[data-flatpickr-name="scheduled_at"]');
     const updateScheduled = function(){
-      const combinedVal = scheduleCombined ? scheduleCombined.value.trim() : "";
-      if (combinedVal){
-        state.scheduledDisplay = combinedVal;
-      } else {
-        const dateVal = scheduleDate ? scheduleDate.value.trim() : "";
-        const timeVal = scheduleTime ? scheduleTime.value.trim() : "";
-        state.scheduledDisplay = (dateVal + " " + timeVal).trim();
-      }
+      const dateVal = scheduleDate ? scheduleDate.value.trim() : "";
+      const timeVal = scheduleTime ? scheduleTime.value.trim() : "";
+      state.scheduledDisplay = (dateVal + " " + timeVal).trim();
       render();
     };
-    const registerScheduleListeners = function(element){
-      if (!element){
-        return;
-      }
-      ["input", "change", "flatpickr:change"].forEach(function(eventName){
-        element.addEventListener(eventName, updateScheduled);
-      });
-    };
-    registerScheduleListeners(scheduleCombined);
     if (scheduleDate){
       scheduleDate.addEventListener("input", updateScheduled);
-      scheduleDate.addEventListener("change", updateScheduled);
     }
     if (scheduleTime){
       scheduleTime.addEventListener("input", updateScheduled);
-      scheduleTime.addEventListener("change", updateScheduled);
     }
     updateScheduled();
 

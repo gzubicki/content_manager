@@ -10,6 +10,7 @@ from django.conf import settings
 from django.contrib import admin, messages
 from django.contrib.admin import helpers
 from django.contrib.admin.views.main import SEARCH_VAR
+from django.contrib.admin.widgets import AdminSplitDateTime
 from django.core.exceptions import PermissionDenied
 from django.core.serializers.json import DjangoJSONEncoder
 from django.core.files.storage import default_storage
@@ -25,7 +26,6 @@ from .models import Channel, DraftPost, Post, PostMedia, ScheduledPost
 from .tasks import task_gpt_generate_for_channel, task_gpt_rewrite_post
 from .drafts import iter_missing_draft_requirements
 from .validators import validate_post_text_for_channel
-from .widgets import FlatpickrSplitDateTimeWidget
 
 
 def enqueue_missing_drafts(channels: Iterable[Channel]) -> tuple[int, int]:
@@ -67,13 +67,9 @@ class RescheduleForm(forms.Form):
     scheduled_at = forms.SplitDateTimeField(
         label="Data publikacji",
         required=False,
-        widget=FlatpickrSplitDateTimeWidget(),
+        widget=AdminSplitDateTime(),
         help_text="Dla trybu ręcznego ustaw dokładną datę i godzinę publikacji.",
     )
-
-    class Media:
-        css = {"all": ("vendor/flatpickr/flatpickr.min.css",)}
-        js = ("vendor/flatpickr/flatpickr.min.js", "admin/datetime_picker.js")
 
     def clean(self):
         cleaned = super().clean()
@@ -88,11 +84,6 @@ class PostForm(forms.ModelForm):
     class Meta:
         model = Post
         fields = ["channel","text","status","scheduled_at","schedule_mode"]
-        widgets = {"scheduled_at": FlatpickrSplitDateTimeWidget()}
-
-    class Media:
-        css = {"all": ("vendor/flatpickr/flatpickr.min.css",)}
-        js = ("vendor/flatpickr/flatpickr.min.js", "admin/datetime_picker.js")
 
     def clean(self):
         cleaned = super().clean()
