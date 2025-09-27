@@ -22,3 +22,12 @@
   </div>
   {% if action_form and actions_on_bottom and cl.show_admin_actions %}{% admin_actions %}{% endif %}
 {% endblock %}
+
+{% block filters %}
+  {% if session_filters_remembered %}
+    <div class="changelist-filter-actions">
+      <a href="?_clear_session_filters=1" class="button">Wyczyść zapamiętane filtry</a>
+    </div>
+  {% endif %}
+  {{ block.super }}
+{% endblock %}
