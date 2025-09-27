@@ -66,6 +66,8 @@ class Post(models.Model):
         verbose_name_plural = "Wpisy"
 
     def save(self, *a, **kw):
+        if self.status == self.Status.APPROVED and self.scheduled_at:
+            self.status = self.Status.SCHEDULED
         if self.status == self.Status.DRAFT and not self.expires_at:
             ttl = getattr(self.channel, "draft_ttl_days", 3)
             self.expires_at = timezone.now() + timezone.timedelta(days=ttl)
