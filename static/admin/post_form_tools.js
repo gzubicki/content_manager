@@ -250,6 +250,13 @@
       return;
     }
 
+    const datepickerExport = window.VueDatePicker;
+    const datepickerComponent = datepickerExport && (datepickerExport.default || datepickerExport.VueDatePicker || datepickerExport);
+    if (!datepickerComponent){
+      console.warn("Vue 3 DatePicker component missing");
+      return;
+    }
+
     const row = dateInput.closest(".form-row") || dateInput.parentElement;
     if (!row){
       return;
@@ -277,20 +284,13 @@
 
     const app = createApp({
       components: {
-        Datepicker: VueDatePicker
+        Datepicker: datepickerComponent
       },
       setup: function(){
-        const modelValue = ref(initial);
+        const modelValue = ref(initial ? new Date(initial.getTime()) : null);
         const manualMode = ref(true);
         const disabled = computed(function(){ return !manualMode.value; });
-        const humanPreview = computed(function(){
-          if (!modelValue.value){
-            return "Brak wybranej daty";
-          }
-          return formatHuman(modelValue.value);
-        });
-
-        watch(modelValue, function(next){
+        const syncToInputs = function(next){
           if (!next){
             dateInput.value = "";
             timeInput.value = "";
@@ -299,9 +299,21 @@
             dateInput.value = formatted.date;
             timeInput.value = formatted.time;
           }
-          dateInput.dispatchEvent(new Event("input", { bubbles: true }));
-          timeInput.dispatchEvent(new Event("input", { bubbles: true }));
+          [dateInput, timeInput].forEach(function(el){
+            el.dispatchEvent(new Event("input", { bubbles: true }));
+            el.dispatchEvent(new Event("change", { bubbles: true }));
+          });
+        };
+        const humanPreview = computed(function(){
+          if (!modelValue.value){
+            return "Brak wybranej daty";
+          }
+          return formatHuman(modelValue.value);
         });
+
+        watch(modelValue, function(next){
+          syncToInputs(next);
+        }, { immediate: true });
 
         schedulePicker.setManual = function(isManual){
           manualMode.value = !!isManual;
@@ -316,16 +328,19 @@
 
         schedulePicker.setFromInputs = function(){
           const parsed = parseFromInputs(dateInput, timeInput);
-          modelValue.value = parsed;
+          modelValue.value = parsed ? new Date(parsed.getTime()) : null;
         };
 
         const pickNow = function(){
-          const now = new Date();
-          modelValue.value = now;
+          if (manualMode.value){
+            modelValue.value = new Date();
+          }
         };
 
         const clearAll = function(){
-          modelValue.value = null;
+          if (manualMode.value){
+            modelValue.value = null;
+          }
         };
 
         return {
@@ -372,8 +387,10 @@
       if (!manual){
         dateInput.value = "";
         timeInput.value = "";
-        dateInput.dispatchEvent(new Event("input", { bubbles: true }));
-        timeInput.dispatchEvent(new Event("input", { bubbles: true }));
+        [dateInput, timeInput].forEach(function(el){
+          el.dispatchEvent(new Event("input", { bubbles: true }));
+          el.dispatchEvent(new Event("change", { bubbles: true }));
+        });
       } else {
         schedulePicker.setFromInputs();
       }
