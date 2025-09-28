@@ -284,7 +284,7 @@
 
     const app = createApp({
       components: {
-        Datepicker: datepickerComponent
+        VueDatePicker: datepickerComponent
       },
       setup: function(){
         const modelValue = ref(initial ? new Date(initial.getTime()) : null);
@@ -357,7 +357,7 @@
             <p class="tg-datetime-picker__title">Termin publikacji</p>
             <span class="tg-datetime-picker__status">{{ humanPreview }}</span>
           </div>
-          <date-picker
+          <VueDatePicker
             v-model="modelValue"
             :is-24="true"
             :enable-time-picker="true"
@@ -368,7 +368,7 @@
             :allow-prevent-default="true"
             placeholder="Wybierz datę i godzinę"
             locale="pl"
-          ></date-picker>
+          ></VueDatePicker>
           <div class="tg-datetime-picker__actions">
             <button type="button" class="tg-datetime-picker__link" @click="pickNow" :disabled="disabled">Teraz</button>
             <button type="button" class="tg-datetime-picker__link is-muted" @click="clearAll" :disabled="disabled">Wyczyść</button>
