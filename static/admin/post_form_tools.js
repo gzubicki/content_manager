@@ -366,6 +366,7 @@
             :clearable="false"
             :teleport="false"
             :allow-prevent-default="true"
+            :disabled="disabled"
             placeholder="Wybierz datę i godzinę"
             locale="pl"
           ></VueDatePicker>

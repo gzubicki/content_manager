@@ -285,7 +285,6 @@ body.dark-theme .tg-datetime-picker__link.is-muted{
 
 .tg-datetime-picker.is-disabled{
   opacity:0.6;
-  pointer-events:none;
 }
 
 @media (max-width: 680px){
