@@ -7,6 +7,9 @@
   {{ block.super }}
   <script src="{% url 'admin:jsi18n' %}"></script>
   {{ media }}
+  <script src="https://unpkg.com/vue@3/dist/vue.global.prod.js" defer></script>
+  <script src="https://unpkg.com/@vuepic/vue-datepicker@latest" defer></script>
+  <script defer src="{% static 'admin/post_form_tools.js' %}"></script>
 {% endblock %}
 
 {% block extrastyle %}
@@ -14,6 +17,8 @@
   <link rel="stylesheet" href="{% static 'admin/css/forms.css' %}">
   <link rel="stylesheet" href="{% static 'admin/post_cards.css' %}">
   <link rel="stylesheet" href="{% static 'admin/post_edit.css' %}">
+  <link rel="stylesheet" href="https://unpkg.com/@vuepic/vue-datepicker@latest/dist/main.css">
+  <link rel="stylesheet" href="{% static 'admin/post_form_tools.css' %}">
 {% endblock %}
 
 {% block coltype %}colM{% endblock %}

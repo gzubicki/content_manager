@@ -11,8 +11,7 @@
 .post-edit__form fieldset.module{ border-radius:12px; border:1px solid rgba(148,163,184,0.3) }
 .post-edit__form fieldset.module h2{ font-size:16px; font-weight:600 }
 
-#id_text{ font-family:"JetBrains Mono", "SFMono-Regular", Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
-  min-height:280px; font-size:14px; line-height:1.55 }
+#id_text{ font-family:"JetBrains Mono", "SFMono-Regular", Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; }
 
 .inline-group{ margin-top:0 }
 .inline-group .post-media-inline{ border:1px solid rgba(148,163,184,0.35); border-radius:12px; padding:16px; margin-bottom:16px; background:#fff }

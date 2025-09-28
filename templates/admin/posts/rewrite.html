@@ -1,9 +1,15 @@
 {% extends "admin/base_site.html" %}
-{% load i18n %}
+{% load i18n static %}
 
 {% block extrahead %}
   {{ block.super }}
   {{ media }}
+  <script defer src="{% static 'admin/post_form_tools.js' %}"></script>
+{% endblock %}
+
+{% block extrastyle %}
+  {{ block.super }}
+  <link rel="stylesheet" href="{% static 'admin/post_form_tools.css' %}">
 {% endblock %}
 
 {% block content %}

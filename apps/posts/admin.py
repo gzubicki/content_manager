@@ -85,6 +85,15 @@ class PostForm(forms.ModelForm):
         model = Post
         fields = ["channel","text","status","scheduled_at","schedule_mode"]
 
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        text_field = self.fields.get("text")
+        if text_field is not None:
+            attrs = text_field.widget.attrs
+            attrs.setdefault("data-tg-editor", "1")
+            attrs.setdefault("data-tg-editor-compact", "0")
+            attrs.setdefault("placeholder", "Treść wpisu zgodna ze standardem Telegrama…")
+
     def clean(self):
         cleaned = super().clean()
         obj = self.instance
@@ -233,6 +242,15 @@ class RewritePromptForm(forms.Form):
         widget=forms.Textarea(attrs={"rows": 4}),
         help_text="Pozostaw puste, aby użyć domyślnej korekty stylu.",
     )
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        prompt_field = self.fields.get("prompt")
+        if prompt_field is not None:
+            attrs = prompt_field.widget.attrs
+            attrs.setdefault("data-tg-editor", "1")
+            attrs.setdefault("data-tg-editor-compact", "1")
+            attrs.setdefault("placeholder", "Opcjonalny prompt dla GPT…")
 
 
 class BasePostAdmin(admin.ModelAdmin):
