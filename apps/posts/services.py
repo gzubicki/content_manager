@@ -357,10 +357,13 @@ def create_post_from_payload(channel: Channel, payload: dict[str, Any]) -> Post:
     if isinstance(media_items, list):
         attach_media_from_payload(post, media_items)
     return post
+
+
 def compute_dupe(post: Post) -> float:
     texts = Post.objects.filter(status="PUBLISHED").order_by("-id").values_list("text", flat=True)[:300]
-    if not texts: return 0.0
-    return max(fuzz.token_set_ratio(post.text, t)/100.0 for t in texts)
+    if not texts:
+        return 0.0
+    return max(fuzz.token_set_ratio(post.text, t) / 100.0 for t in texts)
 
 def next_auto_slot(channel: Channel, dt=None):
     tz_waw = tz.gettz("Europe/Warsaw")
@@ -428,13 +431,15 @@ def purge_cache():
             if pm.cache_path and os.path.exists(pm.cache_path):
                 os.remove(pm.cache_path)
         finally:
-            pm.cache_path = ""; pm.save()
-            
+            pm.cache_path = ""
+            pm.save()
+
 def cache_media(pm: PostMedia):
     if pm.cache_path and os.path.exists(pm.cache_path):
         return pm.cache_path
     url = (pm.source_url or "").strip()
-    if not url: return ""
+    if not url:
+        return ""
     media_root = Path(settings.MEDIA_ROOT)
     cache_dir = media_root / "cache"
     os.makedirs(cache_dir, exist_ok=True)

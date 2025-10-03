@@ -614,12 +614,14 @@ class BasePostAdmin(admin.ModelAdmin):
 
     @admin.action(description="Przelicz slot AUTO")
     def act_schedule(self, request, qs):
-        for p in qs: services.assign_auto_slot(p)
+        for post in qs:
+            services.assign_auto_slot(post)
 
     @admin.action(description="Opublikuj teraz")
     def act_publish_now(self, request, qs):
         from .tasks import publish_post
-        for p in qs: publish_post.delay(p.id)
+        for post in qs:
+            publish_post.delay(post.id)
 
     @admin.action(description="Usuń")
     def act_delete(self, request, qs):

@@ -1,6 +1,7 @@
 import os
 from pathlib import Path
-from celery.schedules import crontab
+
+import dj_database_url
 from django.utils.translation import gettext_lazy as _
 from dotenv import load_dotenv
 load_dotenv()
@@ -79,8 +80,6 @@ STORAGES = {
 
 MEDIA_URL = "/media/"
 MEDIA_ROOT = Path(os.getenv("MEDIA_ROOT", BASE_DIR / "media"))
-
-import dj_database_url
 DATABASES = {"default": dj_database_url.parse(os.getenv("DATABASE_URL", "sqlite:///db.sqlite3"))}
 
 CELERY_BROKER_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
