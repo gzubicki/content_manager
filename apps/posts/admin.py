@@ -2,12 +2,14 @@ import json
 import os
 from collections.abc import Iterable
 from pathlib import Path
+from typing import Any
 from uuid import uuid4
 
 from django import forms
 from django.conf import settings
 from django.contrib import admin, messages
 from django.contrib.admin import helpers
+from django.contrib.admin.views.main import SEARCH_VAR
 from django.contrib.admin.widgets import AdminSplitDateTime
 from django.core.exceptions import PermissionDenied
 from django.core.serializers.json import DjangoJSONEncoder
@@ -371,10 +373,73 @@ class BasePostAdmin(admin.ModelAdmin):
             context["rewrite_url"] = self._object_url(obj, "rewrite")
         return super().render_change_form(request, context, add=add, change=change, form_url=form_url, obj=obj)
 
+    def _filters_session_key(self) -> str:
+        opts = self.model._meta
+        return f"admin:filters:{opts.app_label}.{opts.model_name}"
+
+    def _restore_filters_if_needed(self, request):
+        if request.method != "GET":
+            return None
+
+        session_key = self._filters_session_key()
+        if request.GET.get("_clear_session_filters"):
+            request.session.pop(session_key, None)
+            params = request.GET.copy()
+            params.pop("_clear_session_filters", None)
+            url = request.path
+            query = params.urlencode()
+            return redirect(f"{url}?{query}" if query else url)
+
+        saved = request.session.get(session_key)
+        if not saved:
+            return None
+
+        saved_filters = saved.get("filters") or {}
+        saved_search = saved.get("search")
+
+        params = request.GET.copy()
+        updated = False
+        for key, value in saved_filters.items():
+            if key in params:
+                continue
+            params[key] = value
+            updated = True
+        if saved_search and SEARCH_VAR not in params:
+            params[SEARCH_VAR] = saved_search
+            updated = True
+
+        if not updated:
+            return None
+
+        params.pop("_changelist_filters", None)
+        url = request.path
+        query = params.urlencode()
+        return redirect(f"{url}?{query}" if query else url)
+
+    def _store_filters_in_session(self, request, changelist) -> None:
+        session_key = self._filters_session_key()
+        filters = dict(changelist.get_filters_params()) if changelist else {}
+        stored: dict[str, Any] = {}
+        if filters:
+            stored["filters"] = filters
+        search_value = getattr(changelist, "query", "") or ""
+        if search_value:
+            stored["search"] = search_value
+
+        if stored:
+            request.session[session_key] = stored
+        else:
+            request.session.pop(session_key, None)
+
     def changelist_view(self, request, extra_context=None):
+        redirect_response = self._restore_filters_if_needed(request)
+        if redirect_response is not None:
+            return redirect_response
+
         response = super().changelist_view(request, extra_context=extra_context)
         if hasattr(response, "context_data"):
             cl = response.context_data.get("cl")
+            remembered = bool(request.session.get(self._filters_session_key()))
             if cl:
                 response.context_data.setdefault("action_checkbox_name", helpers.ACTION_CHECKBOX_NAME)
                 for post in cl.result_list:
@@ -385,6 +450,9 @@ class BasePostAdmin(admin.ModelAdmin):
                     post.rewrite_url = self._object_url(post, "rewrite")
                     post.approve_url = self.get_approve_url(post)
                     post.is_draft = post.status == Post.Status.DRAFT
+                self._store_filters_in_session(request, cl)
+                remembered = bool(request.session.get(self._filters_session_key()))
+            response.context_data["session_filters_remembered"] = remembered
         return response
 
     def get_approve_url(self, post):
