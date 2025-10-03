@@ -4,6 +4,15 @@
 {% block extrahead %}
   {{ block.super }}
   {{ media }}
+  <script defer src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
+  <script defer src="https://unpkg.com/@vuepic/vue-datepicker@latest/dist/vue-datepicker.iife.js"></script>
+  <script defer src="{% static 'admin/telegram_editor.js' %}"></script>
+{% endblock %}
+
+{% block extrastyle %}
+  {{ block.super }}
+  <link rel="stylesheet" href="https://unpkg.com/@vuepic/vue-datepicker@latest/dist/main.css">
+  <link rel="stylesheet" href="{% static 'admin/telegram_editor.css' %}">
 {% endblock %}
 
 {% block content %}

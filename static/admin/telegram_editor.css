@@ -1,0 +1,136 @@
+.tg-editor{
+  display:flex;
+  flex-direction:column;
+  gap:8px;
+  background:#fff;
+  border:1px solid rgba(148,163,184,0.45);
+  border-radius:12px;
+  padding:12px;
+}
+
+.tg-editor textarea{
+  width:100%;
+  border:1px solid rgba(148,163,184,0.6);
+  border-radius:10px;
+  padding:12px;
+  font-family:"JetBrains Mono", "SFMono-Regular", Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+  font-size:14px;
+  line-height:1.6;
+  min-height:260px;
+  background:#f8fafc;
+  color:#0f172a;
+  transition:border-color .2s ease, box-shadow .2s ease;
+}
+
+.tg-editor textarea:focus{
+  outline:none;
+  border-color:#2563eb;
+  box-shadow:0 0 0 3px rgba(37, 99, 235, 0.2);
+  background:#fff;
+}
+
+.tg-editor__toolbar{
+  display:flex;
+  flex-wrap:wrap;
+  gap:8px;
+}
+
+.tg-editor__btn{
+  border:none;
+  border-radius:8px;
+  padding:8px 12px;
+  font-weight:600;
+  font-size:13px;
+  background:#0f172a;
+  color:#f8fafc;
+  cursor:pointer;
+  transition:transform .15s ease, background .15s ease;
+}
+
+.tg-editor__btn:hover,
+.tg-editor__btn:focus{
+  background:#1d4ed8;
+  transform:translateY(-1px);
+}
+
+.tg-editor__btn:active{
+  transform:translateY(0);
+}
+
+.tg-editor__counter{
+  font-size:12px;
+  color:#475569;
+  display:flex;
+  align-items:center;
+  flex-wrap:wrap;
+  gap:8px;
+}
+
+.tg-editor__counter[data-over-limit]{
+  color:#b91c1c;
+  font-weight:600;
+}
+
+@media (max-width: 768px){
+  .tg-editor{
+    padding:10px;
+    border-radius:10px;
+  }
+  .tg-editor textarea{
+    min-height:200px;
+    font-size:15px;
+  }
+  .tg-editor__btn{
+    flex:1 1 calc(33% - 10px);
+    text-align:center;
+  }
+}
+
+body.dark-theme .tg-editor{
+  background:rgba(30,41,59,0.85);
+  border-color:rgba(148,163,184,0.35);
+}
+
+body.dark-theme .tg-editor textarea{
+  background:rgba(15,23,42,0.85);
+  color:#e2e8f0;
+  border-color:rgba(148,163,184,0.4);
+}
+
+body.dark-theme .tg-editor__btn{
+  background:#1e293b;
+  color:#e2e8f0;
+}
+
+body.dark-theme .tg-editor__btn:hover,
+body.dark-theme .tg-editor__btn:focus{
+  background:#1d4ed8;
+}
+
+.tg-date-picker{
+  margin-bottom:12px;
+}
+
+.tg-date-picker__widget{
+  width:100%;
+}
+
+.tg-date-picker__input{
+  width:100% !important;
+  border-radius:10px !important;
+  border:1px solid rgba(148,163,184,0.6) !important;
+  padding:10px 14px !important;
+  font-size:16px !important;
+}
+
+.field-scheduled_at .tg-date-picker{
+  display:block;
+}
+
+@media (prefers-color-scheme: dark){
+  .tg-date-picker__input{
+    background:rgba(15,23,42,0.85) !important;
+    color:#e2e8f0 !important;
+    border-color:rgba(148,163,184,0.4) !important;
+  }
+}

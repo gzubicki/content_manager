@@ -12,6 +12,7 @@ venv/
 # Local env files
 .env
 .env.*
+!.env.example
 
 # Django runtime
 db.sqlite3
