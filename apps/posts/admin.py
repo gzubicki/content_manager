@@ -57,6 +57,21 @@ def media_public_url(media: PostMedia) -> str:
     return src
 
 
+IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".tiff"}
+VIDEO_EXTENSIONS = {".mp4", ".mov", ".m4v", ".avi", ".mkv", ".webm", ".mpg", ".mpeg"}
+
+
+def guess_media_type(name: str, content_type: str = "") -> str:
+    name = (name or "").lower()
+    content_type = (content_type or "").lower()
+    suffix = Path(name).suffix
+    if content_type.startswith("image/") or suffix in IMAGE_EXTENSIONS:
+        return "photo"
+    if content_type.startswith("video/") or suffix in VIDEO_EXTENSIONS:
+        return "video"
+    return "doc"
+
+
 
 class RescheduleForm(forms.Form):
     schedule_mode = forms.ChoiceField(
@@ -114,6 +129,8 @@ class PostMediaInlineForm(forms.ModelForm):
         self.fields["source_url"].widget.attrs["data-preview-source"] = "1"
         self.fields["upload"].widget.attrs.setdefault("accept", "image/*,video/*")
         self.fields["upload"].widget.attrs["data-preview-upload"] = "1"
+        self.fields["type"].required = False
+        self.fields["type"].widget = forms.HiddenInput()
         self.fields["type"].widget.attrs["data-preview-type"] = "1"
         self.fields["order"].widget.attrs["data-preview-order"] = "1"
         self.fields["has_spoiler"].widget.attrs["data-preview-spoiler"] = "1"
@@ -141,6 +158,16 @@ class PostMediaInlineForm(forms.ModelForm):
         url = (cleaned.get("source_url") or "").strip()
         if not (upload or url or (self.instance and self.instance.pk)):
             raise forms.ValidationError("Dodaj plik lub URL dla medium.")
+
+        guessed = None
+        if upload:
+            guessed = guess_media_type(getattr(upload, "name", ""), getattr(upload, "content_type", ""))
+        elif url:
+            guessed = guess_media_type(url)
+
+        if guessed:
+            cleaned["type"] = guessed
+        cleaned["type"] = cleaned.get("type") or (self.instance.type if self.instance and self.instance.pk else "photo")
         return cleaned
 
     def save(self, commit=True):

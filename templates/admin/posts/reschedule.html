@@ -19,6 +19,12 @@
   <div id="content" class="content">
     <h1>{{ title }}</h1>
     <div id="content-main">
+      {% if form.errors %}
+        <p class="errornote">
+          {% blocktranslate count counter=form.errors|length %}Popraw zaznaczony błąd.{% plural %}Popraw zaznaczone błędy.{% endblocktranslate %}
+        </p>
+        {{ form.non_field_errors }}
+      {% endif %}
       <form method="post" novalidate>
         {% csrf_token %}
         <fieldset class="module aligned">

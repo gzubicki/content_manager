@@ -52,6 +52,69 @@
   }
 
   document.addEventListener("DOMContentLoaded", function(){
+    const IMAGE_EXT = new Set([".jpg",".jpeg",".png",".gif",".webp",".bmp",".tiff"]);
+    const VIDEO_EXT = new Set([".mp4",".mov",".m4v",".avi",".mkv",".webm",".mpg",".mpeg"]);
+
+    function normalizeExtension(value){
+      return value ? value.toLowerCase().replace(/^.*(\.[a-z0-9]+)(?:\?.*)?$/, "$1") : "";
+    }
+
+    function guessMediaType(name, mime){
+      const lowerMime = (mime || "").toLowerCase();
+      const ext = normalizeExtension(name || "");
+      if (lowerMime.startsWith("image/") || IMAGE_EXT.has(ext)){
+        return "photo";
+      }
+      if (lowerMime.startsWith("video/") || VIDEO_EXT.has(ext)){
+        return "video";
+      }
+      return "doc";
+    }
+
+    function applyGuessedType(form, hint){
+      if (!form || !hint){
+        return;
+      }
+      if (form.dataset.typeManuallySet === "1"){
+        return;
+      }
+      const typeField = form.querySelector("[data-preview-type]");
+      if (!typeField){
+        return;
+      }
+      const current = typeField.value;
+      if (current === hint){
+        return;
+      }
+      typeField.value = hint;
+      const evt = new Event("change", { bubbles: true });
+      typeField.dispatchEvent(evt);
+    }
+
+    function guessFromUpload(form, input){
+      if (!input){
+        return;
+      }
+      const file = input.files && input.files[0];
+      if (!file){
+        return;
+      }
+      const guessed = guessMediaType(file.name, file.type);
+      applyGuessedType(form, guessed);
+    }
+
+    function guessFromSource(form, input){
+      if (!input){
+        return;
+      }
+      const value = (input.value || input.getAttribute("data-existing-src") || "").trim();
+      if (!value){
+        return;
+      }
+      const guessed = guessMediaType(value, "");
+      applyGuessedType(form, guessed);
+    }
+
     const previewRoot = document.querySelector("[data-preview-card-root]");
     if (!previewRoot){
       return;
@@ -223,6 +286,48 @@
 
     const inlineGroup = document.getElementById("postmedia_set-group");
     if (inlineGroup){
+      inlineGroup.addEventListener("change", function(event){
+        const target = event.target;
+        if (!target){
+          return;
+        }
+        const form = target.closest(".inline-related");
+        if (!form){
+          return;
+        }
+        if (target.matches("[data-preview-type]")){
+          if (event.isTrusted){
+            form.dataset.typeManuallySet = "1";
+          }
+          return;
+        }
+        if (target.matches("[data-preview-upload]")){
+          delete form.dataset.typeManuallySet;
+          guessFromUpload(form, target);
+        }
+        if (target.matches("[data-preview-source]")){
+          delete form.dataset.typeManuallySet;
+          guessFromSource(form, target);
+        }
+      });
+
+      inlineGroup.addEventListener("input", function(event){
+        const target = event.target;
+        if (!target){
+          return;
+        }
+        const form = target.closest(".inline-related");
+        if (!form){
+          return;
+        }
+        if (target.matches("[data-preview-upload]")){
+          guessFromUpload(form, target);
+        }
+        if (target.matches("[data-preview-source]")){
+          guessFromSource(form, target);
+        }
+      });
+
       const handler = function(event){
         const target = event.target;
         if (!target){
@@ -239,6 +344,13 @@
         addRow.addEventListener("click", function(){
           setTimeout(function(){
             refreshMedia();
+            const newForm = inlineGroup.querySelector(".inline-related:last-child");
+            if (newForm){
+              const upload = newForm.querySelector("[data-preview-upload]");
+              const source = newForm.querySelector("[data-preview-source]");
+              guessFromUpload(newForm, upload);
+              guessFromSource(newForm, source);
+            }
           }, 50);
         });
       }
