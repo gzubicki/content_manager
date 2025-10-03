@@ -14,6 +14,7 @@ from django.contrib.admin.widgets import AdminSplitDateTime
 from django.core.exceptions import PermissionDenied
 from django.core.serializers.json import DjangoJSONEncoder
 from django.core.files.storage import default_storage
+from django.http import JsonResponse
 from django.shortcuts import get_object_or_404, redirect
 from django.template.response import TemplateResponse
 from django.urls import path, reverse
@@ -406,9 +407,56 @@ class BasePostAdmin(admin.ModelAdmin):
         context["preview_media_json"] = preview.get("media_json", "[]")
         if obj and obj.pk:
             context["rewrite_url"] = self._object_url(obj, "rewrite")
+            context["status_url"] = self._object_url(obj, "status")
         channel_meta = list(Channel.objects.values("id", "name", "max_chars", "emoji_min", "emoji_max", "no_links_in_text"))
         context["channel_metadata_json"] = self._serialize_media(channel_meta)
         return super().render_change_form(request, context, add=add, change=change, form_url=form_url, obj=obj)
+
+    def _serialize_post_state(self, post: Post) -> dict:
+        channel_name = post.channel.name if post.channel_id and post.channel else ""
+        scheduled_iso = None
+        scheduled_date = ""
+        scheduled_time = ""
+        scheduled_display = ""
+        if post.scheduled_at:
+            scheduled_local = timezone.localtime(post.scheduled_at)
+            scheduled_iso = scheduled_local.isoformat()
+            scheduled_date = scheduled_local.strftime("%Y-%m-%d")
+            scheduled_time = scheduled_local.strftime("%H:%M:%S")
+            scheduled_display = date_format(scheduled_local, "d.m.Y H:i")
+        return {
+            "id": post.pk,
+            "text": post.text,
+            "status": post.status,
+            "status_label": post.get_status_display(),
+            "schedule_mode": post.schedule_mode,
+            "schedule_mode_label": post.get_schedule_mode_display(),
+            "scheduled_at": scheduled_iso,
+            "scheduled_date": scheduled_date,
+            "scheduled_time": scheduled_time,
+            "scheduled_display": scheduled_display,
+            "channel_id": post.channel_id,
+            "channel_name": channel_name,
+            "generated_at": timezone.now().isoformat(),
+        }
+
+    def _serialize_media_state(self, media_items: Iterable[PostMedia]) -> list[dict]:
+        serialized: list[dict] = []
+        for media in media_items:
+            public_url = self._media_to_url(media)
+            name_source = media.cache_path or media.source_url or ""
+            serialized.append(
+                {
+                    "id": media.pk,
+                    "type": media.type or "photo",
+                    "order": media.order,
+                    "has_spoiler": media.has_spoiler,
+                    "source_url": media.source_url or "",
+                    "media_public_url": public_url,
+                    "name": Path(name_source).name if name_source else "",
+                }
+            )
+        return serialized
 
     def _filters_session_key(self) -> str:
         opts = self.model._meta
@@ -513,8 +561,31 @@ class BasePostAdmin(admin.ModelAdmin):
                 self.admin_site.admin_view(self.rewrite_view),
                 name=f"{opts.app_label}_{opts.model_name}_rewrite",
             ),
+            path(
+                "<int:object_id>/status/",
+                self.admin_site.admin_view(self.status_view),
+                name=f"{opts.app_label}_{opts.model_name}_status",
+            ),
         ]
         return custom + urls
+
+    def status_view(self, request, object_id):
+        if request.method != "GET":
+            raise PermissionDenied
+        queryset = (
+            self.model._default_manager.select_related("channel").prefetch_related("media")
+        )
+        post = get_object_or_404(queryset, pk=object_id)
+        if not (
+            self.has_view_permission(request, post)
+            or self.has_change_permission(request, post)
+        ):
+            raise PermissionDenied
+        data = {
+            "post": self._serialize_post_state(post),
+            "media": self._serialize_media_state(post.media.all()),
+        }
+        return JsonResponse(data, encoder=DjangoJSONEncoder)
 
     def reschedule_view(self, request, object_id):
         post = get_object_or_404(self.model, pk=object_id)
