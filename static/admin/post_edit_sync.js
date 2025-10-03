@@ -196,22 +196,140 @@
     return (idField.value || "").trim();
   }
 
+  function dispatchFormsetAdded(form, inlineGroup, context){
+    if (!form){
+      return;
+    }
+    let prefix = "";
+    const ctx = context && context.options ? context.options : null;
+    if (ctx && typeof ctx.prefix === "string"){
+      prefix = ctx.prefix;
+    } else if (ctx && typeof ctx.name === "string"){
+      prefix = ctx.name;
+    } else if (inlineGroup){
+      const totalInput = inlineGroup.querySelector('input[name$="-TOTAL_FORMS"]');
+      if (totalInput){
+        prefix = totalInput.name.replace(/-TOTAL_FORMS$/, "");
+      }
+    }
+    if (window.django && window.django.jQuery){
+      try {
+        window.django.jQuery(form).trigger("formset:added", [form, prefix]);
+      } catch(err){
+        // best effort only
+      }
+    }
+    try {
+      form.dispatchEvent(new CustomEvent("formset:added", {
+        bubbles: true,
+        detail: {
+          formsetName: prefix,
+        },
+      }));
+    } catch(err){
+      // ignore
+    }
+  }
+
+  function cloneInlineFromTemplate(inlineGroup){
+    if (!inlineGroup){
+      return null;
+    }
+    const emptyForm = inlineGroup.querySelector(".inline-related.empty-form");
+    const totalInput = inlineGroup.querySelector('input[name$="-TOTAL_FORMS"]');
+    if (!emptyForm || !totalInput){
+      return null;
+    }
+    const prefix = (totalInput.name || "").replace(/-TOTAL_FORMS$/, "");
+    const currentIndex = parseInt(totalInput.value || "0", 10) || 0;
+
+    const newForm = emptyForm.cloneNode(true);
+    newForm.classList.remove("empty-form", "last-related", "post-media-inline--remote-removed");
+    newForm.style.display = "";
+
+    const patternPrefix = prefix ? new RegExp(prefix + "-__prefix__", "g") : null;
+    const patternGeneric = /__prefix__/g;
+
+    (function walk(node){
+      if (node.nodeType === Node.ELEMENT_NODE){
+        Array.from(node.attributes).forEach(attr => {
+          if (attr.value && attr.value.indexOf("__prefix__") !== -1){
+            let updated = attr.value;
+            if (patternPrefix){
+              updated = updated.replace(patternPrefix, prefix + "-" + currentIndex);
+            }
+            updated = updated.replace(patternGeneric, currentIndex);
+            node.setAttribute(attr.name, updated);
+          }
+        });
+      } else if (node.nodeType === Node.TEXT_NODE){
+        if (node.textContent && node.textContent.indexOf("__prefix__") !== -1){
+          node.textContent = node.textContent.replace(patternGeneric, currentIndex);
+        }
+      }
+      Array.from(node.childNodes || []).forEach(walk);
+    })(newForm);
+
+    totalInput.value = String(currentIndex + 1);
+    emptyForm.parentNode.insertBefore(newForm, emptyForm);
+
+    const inlineContext = inlineGroup.dataset && inlineGroup.dataset.inlineFormset
+      ? (function(){
+          try {
+            return JSON.parse(inlineGroup.dataset.inlineFormset);
+          } catch(err){
+            return null;
+          }
+        })()
+      : null;
+
+    dispatchFormsetAdded(newForm, inlineGroup, { options: inlineContext });
+    return newForm;
+  }
+
   function ensureInlineForm(inlineGroup){
     if (!inlineGroup){
       return null;
     }
+    const before = getInlineForms(inlineGroup);
     const addLink = inlineGroup.querySelector(".add-row a");
-    if (!addLink){
-      return null;
+    if (addLink){
+      let clickHandled = false;
+      if (window.django && window.django.jQuery){
+        try {
+          window.django.jQuery(addLink).trigger("click");
+          clickHandled = true;
+        } catch(err){
+          clickHandled = false;
+        }
+      }
+      if (!clickHandled){
+        const synthetic = new MouseEvent("click", { bubbles: true, cancelable: true });
+        addLink.dispatchEvent(synthetic);
+        if (!synthetic.defaultPrevented){
+          try {
+            addLink.click();
+          } catch(err){
+            // ignore
+          }
+        }
+      }
+      const formsAfter = getInlineForms(inlineGroup);
+      if (formsAfter.length > before.length){
+        const created = formsAfter[formsAfter.length - 1];
+        created.classList.add("has_original");
+        created.classList.remove("dynamic-postmedia", "post-media-inline--remote-removed");
+        created.style.display = "";
+        return created;
+      }
     }
-    addLink.click();
-    const forms = getInlineForms(inlineGroup);
-    const created = forms.length ? forms[forms.length - 1] : null;
-    if (created){
-      created.classList.add("has_original");
-      created.classList.remove("dynamic-postmedia");
+    const fallback = cloneInlineFromTemplate(inlineGroup);
+    if (fallback){
+      fallback.classList.add("has_original");
+      fallback.classList.remove("dynamic-postmedia", "post-media-inline--remote-removed");
+      fallback.style.display = "";
     }
-    return created;
+    return fallback;
   }
 
   function updateMediaForm(form, item){
