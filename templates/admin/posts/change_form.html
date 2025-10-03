@@ -7,14 +7,14 @@
   {{ block.super }}
   <script src="{% url 'admin:jsi18n' %}"></script>
   {{ media }}
-  <script defer src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
-  <script defer src="https://unpkg.com/@vuepic/vue-datepicker@latest/dist/vue-datepicker.iife.js"></script>
+  <script defer src="{% static 'vendor/vue/vue.global.prod.js' %}"></script>
+  <script defer src="{% static 'vendor/vue-datepicker/vue-datepicker.iife.js' %}"></script>
   <script defer src="{% static 'admin/telegram_editor.js' %}"></script>
 {% endblock %}
 
 {% block extrastyle %}
   {{ block.super }}
-  <link rel="stylesheet" href="https://unpkg.com/@vuepic/vue-datepicker@latest/dist/main.css">
+  <link rel="stylesheet" href="{% static 'vendor/vue-datepicker/vue-datepicker.css' %}">
   <link rel="stylesheet" href="{% static 'admin/css/forms.css' %}">
   <link rel="stylesheet" href="{% static 'admin/post_cards.css' %}">
   <link rel="stylesheet" href="{% static 'admin/post_edit.css' %}">
