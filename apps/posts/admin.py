@@ -21,6 +21,7 @@ from django.urls import path, reverse
 from django.utils import timezone
 from django.utils.formats import date_format
 from django.utils.html import format_html
+from django.utils.translation import gettext, ngettext
 
 from . import services
 from .models import Channel, DraftPost, Post, PostMedia, ScheduledPost
@@ -519,6 +520,42 @@ class BasePostAdmin(admin.ModelAdmin):
         else:
             request.session.pop(session_key, None)
 
+    cards_refresh_interval_ms = 20000
+
+    def get_cards_refresh_interval(self) -> int:
+        interval = int(self.cards_refresh_interval_ms or 0)
+        return interval if interval > 0 else 20000
+
+    def _is_cards_partial_request(self, request) -> bool:
+        if request.GET.get("_partial") == "cards":
+            return True
+        requested_with = request.headers.get("X-Requested-With") or request.META.get("HTTP_X_REQUESTED_WITH", "")
+        return requested_with.lower() == "xmlhttprequest" and request.GET.get("_cards") == "1"
+
+    def _render_cards_partial(self, request, context):
+        cl = context.get("cl")
+        if cl is None:
+            cl = type("EmptyChangeList", (), {"result_list": [], "result_count": 0})()
+        partial_context = {
+            "cl": cl,
+            "action_checkbox_name": context.get("action_checkbox_name", helpers.ACTION_CHECKBOX_NAME),
+            "actions_selection_counter": context.get("actions_selection_counter"),
+            "selection_note_template": context.get(
+                "selection_note_template",
+                gettext("%(sel)s of %(cnt)s selected"),
+            ),
+            "selection_note_all_template": context.get(
+                "selection_note_all_template",
+                ngettext("%(total_count)s selected", "All %(total_count)s selected", getattr(cl, "result_count", 0)),
+            ),
+            "post_cards_refresh_interval": context.get("post_cards_refresh_interval", self.get_cards_refresh_interval()),
+        }
+        return TemplateResponse(
+            request,
+            "admin/posts/includes/post_card_grid.html",
+            partial_context,
+        )
+
     def changelist_view(self, request, extra_context=None):
         redirect_response = self._restore_filters_if_needed(request)
         if redirect_response is not None:
@@ -530,6 +567,17 @@ class BasePostAdmin(admin.ModelAdmin):
             remembered = bool(request.session.get(self._filters_session_key()))
             if cl:
                 response.context_data.setdefault("action_checkbox_name", helpers.ACTION_CHECKBOX_NAME)
+                response.context_data.setdefault(
+                    "selection_note_template",
+                    gettext("%(sel)s of %(cnt)s selected"),
+                )
+                response.context_data.setdefault(
+                    "selection_note_all_template",
+                    ngettext("%(total_count)s selected", "All %(total_count)s selected", cl.result_count),
+                )
+                response.context_data.setdefault(
+                    "post_cards_refresh_interval", self.get_cards_refresh_interval()
+                )
                 for post in cl.result_list:
                     post.preview_media = self._build_preview_media(post)
                     post.change_url = self._object_url(post, "change")
@@ -542,6 +590,8 @@ class BasePostAdmin(admin.ModelAdmin):
                 remembered = bool(request.session.get(self._filters_session_key()))
             response.context_data.setdefault("request", request)
             response.context_data["session_filters_remembered"] = remembered
+            if self._is_cards_partial_request(request):
+                return self._render_cards_partial(request, response.context_data)
         return response
 
     def get_approve_url(self, post):

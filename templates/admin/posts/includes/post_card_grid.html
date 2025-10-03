@@ -1,0 +1,16 @@
+<div
+  class="post-card-grid"
+  data-action-checkbox-name="{{ action_checkbox_name|default:''|escape }}"
+  data-actions-selection-counter="{{ actions_selection_counter|yesno:'true,false' }}"
+  data-selection-note-template="{{ selection_note_template|default:''|escape }}"
+  data-selection-note-all-template="{{ selection_note_all_template|default:''|escape }}"
+  data-page-count="{{ cl.result_list|length }}"
+  data-total-count="{{ cl.result_count }}"
+  data-refresh-interval-ms="{{ post_cards_refresh_interval }}"
+>
+  {% for post in cl.result_list %}
+    {% include "admin/posts/includes/post_card.html" with post=post action_checkbox_name=action_checkbox_name cl=cl %}
+  {% empty %}
+    <p>Brak wpisów do wyświetlenia.</p>
+  {% endfor %}
+</div>
