@@ -439,7 +439,10 @@ class BasePostAdmin(admin.ModelAdmin):
         for key, value in saved_filters.items():
             if key in params:
                 continue
-            params[key] = value
+            if isinstance(value, (list, tuple)):
+                params.setlist(key, list(value))
+            else:
+                params[key] = value
             updated = True
         if saved_search and SEARCH_VAR not in params:
             params[SEARCH_VAR] = saved_search
@@ -489,6 +492,7 @@ class BasePostAdmin(admin.ModelAdmin):
                     post.is_draft = post.status == Post.Status.DRAFT
                 self._store_filters_in_session(request, cl)
                 remembered = bool(request.session.get(self._filters_session_key()))
+            response.context_data.setdefault("request", request)
             response.context_data["session_filters_remembered"] = remembered
         return response
 
