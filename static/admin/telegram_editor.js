@@ -277,6 +277,7 @@
               :minute-increment="5"
               :action-row="actionRow"
               :teleport-center="true"
+              :flow="['calendar','time']"
               locale="pl"
               input-class="tg-date-picker__input"
               :format="formatDisplay"
