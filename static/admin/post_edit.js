@@ -356,6 +356,29 @@
       }
     }
 
+    const bridge = {
+      state,
+      render,
+      refreshMedia,
+      readInlineMedia,
+      setMedia(media){
+        state.media = Array.isArray(media) ? media.slice() : [];
+        render();
+      }
+    };
+    window.postEditBridge = bridge;
+    try {
+      if (typeof CustomEvent === "function"){
+        document.dispatchEvent(new CustomEvent("post-edit:ready", { detail: bridge }));
+      } else if (document.createEvent){
+        const evt = document.createEvent("CustomEvent");
+        evt.initCustomEvent("post-edit:ready", false, false, bridge);
+        document.dispatchEvent(evt);
+      }
+    } catch(err){
+      // noop – event dispatch failure shouldn't block preview initialisation
+    }
+
     render();
     refreshMedia();
   });

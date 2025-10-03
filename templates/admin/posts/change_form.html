@@ -37,7 +37,7 @@
 {% endif %}
 
 {% block content %}
-  <div id="content-main" class="post-edit">
+  <div id="content-main" class="post-edit" data-status-url="{{ status_url|default:'' }}">
     <div class="post-edit__form">
       {% block object-tools %}
         {% if change and not is_popup %}
@@ -96,6 +96,7 @@
                     async>
             </script>
             <script defer src="{% static 'admin/post_edit.js' %}"></script>
+            <script defer src="{% static 'admin/post_edit_sync.js' %}"></script>
           {% endblock %}
 
           {% prepopulated_fields_js %}
