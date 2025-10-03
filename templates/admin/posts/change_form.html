@@ -7,13 +7,18 @@
   {{ block.super }}
   <script src="{% url 'admin:jsi18n' %}"></script>
   {{ media }}
+  <script defer src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
+  <script defer src="https://unpkg.com/@vuepic/vue-datepicker@latest/dist/vue-datepicker.iife.js"></script>
+  <script defer src="{% static 'admin/telegram_editor.js' %}"></script>
 {% endblock %}
 
 {% block extrastyle %}
   {{ block.super }}
+  <link rel="stylesheet" href="https://unpkg.com/@vuepic/vue-datepicker@latest/dist/main.css">
   <link rel="stylesheet" href="{% static 'admin/css/forms.css' %}">
   <link rel="stylesheet" href="{% static 'admin/post_cards.css' %}">
   <link rel="stylesheet" href="{% static 'admin/post_edit.css' %}">
+  <link rel="stylesheet" href="{% static 'admin/telegram_editor.css' %}">
 {% endblock %}
 
 {% block coltype %}colM{% endblock %}
@@ -52,6 +57,7 @@
         {% csrf_token %}
         {% block form_top %}{% endblock %}
         <div class="post-edit__form-body">
+          <script type="application/json" id="channel-metadata">{{ channel_metadata_json|default:"[]"|safe }}</script>
           {% if is_popup %}<input type="hidden" name="{{ is_popup_var }}" value="1">{% endif %}
           {% if to_field %}<input type="hidden" name="{{ to_field_var }}" value="{{ to_field }}">{% endif %}
           {% if save_on_top %}{% block submit_buttons_top %}{% submit_row %}{% endblock %}{% endif %}

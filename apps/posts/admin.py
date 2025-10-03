@@ -85,6 +85,14 @@ class PostForm(forms.ModelForm):
         model = Post
         fields = ["channel","text","status","scheduled_at","schedule_mode"]
 
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        text_field = self.fields.get("text")
+        if text_field:
+            widget = text_field.widget
+            widget.attrs.setdefault("data-telegram-editor", "1")
+            widget.attrs.setdefault("rows", 14)
+
     def clean(self):
         cleaned = super().clean()
         obj = self.instance
@@ -371,6 +379,8 @@ class BasePostAdmin(admin.ModelAdmin):
         context["preview_media_json"] = preview.get("media_json", "[]")
         if obj and obj.pk:
             context["rewrite_url"] = self._object_url(obj, "rewrite")
+        channel_meta = list(Channel.objects.values("id", "name", "max_chars", "emoji_min", "emoji_max", "no_links_in_text"))
+        context["channel_metadata_json"] = self._serialize_media(channel_meta)
         return super().render_change_form(request, context, add=add, change=change, form_url=form_url, obj=obj)
 
     def _filters_session_key(self) -> str:
