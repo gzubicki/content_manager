@@ -224,13 +224,98 @@
     }
     updateScheduled();
 
+    function ensurePreviewCell(form){
+      let previewCell = form.querySelector('[data-post-media-preview]');
+      if (previewCell){
+        return previewCell;
+      }
+      previewCell = form.querySelector('.field-existing_file .readonly');
+      if (previewCell){
+        previewCell.setAttribute('data-post-media-preview', '1');
+        return previewCell;
+      }
+      previewCell = document.createElement('div');
+      previewCell.className = 'post-media-inline-preview';
+      previewCell.setAttribute('data-post-media-preview', '1');
+      previewCell.textContent = '—';
+      const firstGroup = form.querySelector('.form-group, p');
+      if (firstGroup && firstGroup.parentNode){
+        firstGroup.parentNode.insertBefore(previewCell, firstGroup);
+      } else {
+        form.insertBefore(previewCell, form.firstChild);
+      }
+      return previewCell;
+    }
+
+    function updatePreviewCell(previewCell, html){
+      if (!previewCell){
+        return;
+      }
+      if (html){
+        previewCell.innerHTML = html;
+        previewCell.setAttribute('data-has-preview', '1');
+      } else {
+        previewCell.innerHTML = '—';
+        previewCell.removeAttribute('data-has-preview');
+      }
+      previewCell.classList.remove('is-loading', 'has-error');
+    }
+
+    function setInlinePreview(form, item){
+      const previewCell = ensurePreviewCell(form);
+      if (!previewCell){
+        return;
+      }
+      if (item && item.src){
+        const mediaType = item.type || 'photo';
+        if (mediaType === 'photo'){
+          previewCell.classList.add('is-loading');
+          updatePreviewCell(previewCell, '<span class="post-media-inline-spinner"></span>');
+          const img = new Image();
+          img.onload = function(){
+            previewCell.classList.remove('is-loading');
+            updatePreviewCell(previewCell, `<img src="${escapeAttr(item.src)}" alt="">`);
+          };
+          img.onerror = function(){
+            previewCell.classList.remove('is-loading');
+            previewCell.classList.add('has-error');
+            updatePreviewCell(previewCell, '<span class="post-media-inline-error">Nie można załadować podglądu</span>');
+          };
+          img.src = item.src;
+          return;
+        }
+        if (mediaType === 'video'){
+          previewCell.classList.add('is-loading');
+          updatePreviewCell(previewCell, '<span class="post-media-inline-spinner"></span>');
+          const video = document.createElement('video');
+          video.src = item.src;
+          video.preload = 'metadata';
+          video.muted = true;
+          video.playsInline = true;
+          video.onloadeddata = function(){
+            previewCell.classList.remove('is-loading');
+            updatePreviewCell(previewCell, renderMediaItem(item));
+          };
+          video.onerror = function(){
+            previewCell.classList.remove('is-loading');
+            previewCell.classList.add('has-error');
+            updatePreviewCell(previewCell, '<span class="post-media-inline-error">Nie można załadować podglądu</span>');
+          };
+          video.load();
+          return;
+        }
+        updatePreviewCell(previewCell, renderMediaItem(item));
+      } else {
+        updatePreviewCell(previewCell, null);
+      }
+    }
+
     function readInlineMedia(){
-      const group = document.getElementById("postmedia_set-group");
-      if (!group){
+      if (!inlineGroup){
         return state.media.slice();
       }
       const collected = [];
-      const forms = group.querySelectorAll(".inline-related");
+      const forms = inlineGroup.querySelectorAll(".inline-related");
       forms.forEach(function(form){
         if (form.classList.contains("empty-form")){
           return;
@@ -264,16 +349,20 @@
           src = sourceField.value.trim() || sourceField.getAttribute("data-existing-src") || "";
           name = sourceField.getAttribute("data-existing-name") || src.split("/").pop();
         }
+        const mediaType = typeField && typeField.value ? typeField.value : "photo";
+        const orderValue = parseFloat(orderField ? orderField.value : "0") || 0;
         if (!src){
+          setInlinePreview(form, null);
           return;
         }
-        const orderValue = parseFloat(orderField ? orderField.value : "0") || 0;
-        collected.push({
+        const mediaItem = {
           src: src,
-          type: typeField.value || "photo",
+          type: mediaType,
           name: name,
           order: orderValue
-        });
+        };
+        setInlinePreview(form, mediaItem);
+        collected.push(mediaItem);
       });
       collected.sort(function(a, b){ return a.order - b.order; });
       return collected;
@@ -284,7 +373,7 @@
       render();
     }
 
-    const inlineGroup = document.getElementById("postmedia_set-group");
+    const inlineGroup = document.querySelector('[data-inline-formset][id$="-group"]');
     if (inlineGroup){
       inlineGroup.addEventListener("change", function(event){
         const target = event.target;

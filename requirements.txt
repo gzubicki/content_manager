@@ -17,5 +17,6 @@ dj-database-url>=2.2.0
 openai>=1.43.0
 tenacity>=8.3.0
 whitenoise>=6.7
+selenium>=4.21
 #production
 gunicorn>=21.2

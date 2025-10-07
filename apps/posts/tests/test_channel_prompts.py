@@ -36,7 +36,7 @@ class ChannelPromptPropagationTest(TestCase):
         self.assertIn("Nie dodawaj linków", system_prompt)
 
         self.assertIn("limicie znaków", user_prompt)
-        self.assertIn("emoji, stopki i zakazów", user_prompt)
+        self.assertIn("Adres url ma prowadzić prosto do zasobu", user_prompt)
         self.assertNotIn("linia1", user_prompt)
         self.assertNotIn("linia2", user_prompt)
         self.assertNotIn("Nie dodawaj linków", user_prompt)
