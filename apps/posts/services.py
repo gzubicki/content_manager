@@ -216,6 +216,22 @@ def _default_image_prompt(post_text: str) -> str:
     )
 
 
+def _guess_media_type_from_url(url: str, fallback: str) -> str:
+    try:
+        parsed = urlparse(url)
+        path = parsed.path or ""
+        ext = Path(path).suffix.lower()
+    except Exception:
+        ext = ""
+    if ext in IMAGE_EXTENSIONS:
+        return "photo"
+    if ext in VIDEO_EXTENSIONS:
+        return "video"
+    if ext in DOC_EXTENSIONS:
+        return "doc"
+    return fallback
+
+
 def _normalise_media_payload(media: Any, fallback_prompt: str) -> list[dict[str, Any]]:
     items = media or []
     if isinstance(items, (dict, str)):
