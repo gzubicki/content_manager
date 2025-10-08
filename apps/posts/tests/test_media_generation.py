@@ -92,6 +92,7 @@ class MediaHandlingTest(TestCase):
             {"type": "photo", "source_url": "https://example.com/new.jpg"},
         ]
         with patch("apps.posts.services.cache_media") as mock_cache:
+            mock_cache.return_value = "/cache/item.jpg"
             services.attach_media_from_payload(self.post, payload)
         media = list(self.post.media.all())
         self.assertEqual(len(media), 1)
@@ -109,6 +110,7 @@ class MediaHandlingTest(TestCase):
         with patch("apps.posts.services._resolve_media_reference", return_value="https://example.com/new.jpg") as mock_resolve, patch(
             "apps.posts.services.cache_media"
         ) as mock_cache:
+            mock_cache.return_value = "/cache/item.jpg"
             services.attach_media_from_payload(self.post, payload)
 
         media = list(self.post.media.all())
@@ -132,6 +134,7 @@ class MediaHandlingTest(TestCase):
             "apps.posts.services._resolve_media_reference",
             return_value="https://cdn.example/video.mp4",
         ) as mock_resolve, patch("apps.posts.services.cache_media") as mock_cache:
+            mock_cache.return_value = "/cache/item.mp4"
             services.attach_media_from_payload(self.post, normalised)
 
         media = list(self.post.media.all())
@@ -148,6 +151,88 @@ class MediaHandlingTest(TestCase):
             caption="Atak dronów FPV na rosyjskie BMP-2 pod Nowoprokopiwką",
         )
         mock_cache.assert_called_once_with(media[0])
+
+    def test_attach_media_auto_expands_telegram_album(self) -> None:
+        payload = [
+            {
+                "type": "photo",
+                "resolver": "telegram",
+                "reference": {"tg_post_url": "https://t.me/uniannet/109639"},
+            }
+        ]
+
+        def _fake_cache(pm: PostMedia) -> str:
+            path = f"/cache/{pm.id}.bin"
+            pm.cache_path = path
+            pm.save(update_fields=["cache_path"])
+            return path
+
+        with patch(
+            "apps.posts.services._resolve_media_reference",
+            return_value="file:///tmp/photo1.jpg",
+        ) as mock_resolve, patch(
+            "apps.posts.services.cache_media",
+            side_effect=_fake_cache,
+        ) as mock_cache, patch(
+            "apps.posts.resolvers.telegram.consume_cached_album",
+            return_value=[{"uri": "file:///tmp/photo2.jpg", "type": "photo"}],
+        ) as mock_consume:
+            services.attach_media_from_payload(self.post, payload)
+
+        media = list(self.post.media.order_by("order"))
+        self.assertEqual(len(media), 2)
+        self.assertEqual(media[0].source_url, "file:///tmp/photo1.jpg")
+        self.assertEqual(media[1].source_url, "file:///tmp/photo2.jpg")
+        self.assertEqual(media[1].type, "photo")
+        mock_resolve.assert_called_once()
+        self.assertEqual(mock_cache.call_count, 2)
+        mock_consume.assert_called_once_with("https://t.me/uniannet/109639")
+        metadata = self.post.source_metadata.get("media", [])
+        self.assertEqual(len(metadata), 2)
+        self.assertTrue(metadata[1].get("auto_album"))
+
+    def test_attach_media_skips_auto_expand_when_multiple_entries_present(self) -> None:
+        payload = [
+            {
+                "type": "photo",
+                "resolver": "telegram",
+                "reference": {"tg_post_url": "https://t.me/uniannet/109639"},
+            },
+            {
+                "type": "photo",
+                "resolver": "telegram",
+                "reference": {"tg_post_url": "https://t.me/uniannet/109639"},
+            },
+        ]
+
+        def _fake_cache(pm: PostMedia) -> str:
+            path = f"/cache/{pm.id}.bin"
+            pm.cache_path = path
+            pm.save(update_fields=["cache_path"])
+            return path
+
+        with patch(
+            "apps.posts.services._resolve_media_reference",
+            side_effect=["file:///tmp/photo1.jpg", "file:///tmp/photo2.jpg"],
+        ) as mock_resolve, patch(
+            "apps.posts.services.cache_media",
+            side_effect=_fake_cache,
+        ) as mock_cache, patch(
+            "apps.posts.resolvers.telegram.consume_cached_album",
+            return_value=[{"uri": "file:///tmp/photo3.jpg", "type": "photo"}],
+        ) as mock_consume:
+            services.attach_media_from_payload(self.post, payload)
+
+        media = list(self.post.media.order_by("order"))
+        self.assertEqual(len(media), 2)
+        self.assertEqual(media[0].source_url, "file:///tmp/photo1.jpg")
+        self.assertEqual(media[1].source_url, "file:///tmp/photo2.jpg")
+        self.assertEqual(mock_cache.call_count, 2)
+        mock_resolve.assert_called()
+        mock_consume.assert_not_called()
+        metadata = self.post.source_metadata.get("media", [])
+        self.assertEqual(len(metadata), 2)
+        self.assertFalse(any(entry.get("auto_album") for entry in metadata))
 
     def test_resolve_media_reference_without_resolver_service(self) -> None:
         with mock.patch.dict(os.environ, {"MEDIA_RESOLVER_URL": ""}):
