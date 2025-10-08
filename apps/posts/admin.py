@@ -14,12 +14,18 @@ from django.contrib.admin.widgets import AdminSplitDateTime
 from django.core.exceptions import PermissionDenied
 from django.core.serializers.json import DjangoJSONEncoder
 from django.core.files.storage import default_storage
+from django.http import JsonResponse
 from django.shortcuts import get_object_or_404, redirect
 from django.template.response import TemplateResponse
-from django.urls import path, reverse
+from django.urls import NoReverseMatch, path, reverse
+from django.db.models import Q
 from django.utils import timezone
 from django.utils.formats import date_format
-from django.utils.html import format_html
+from django.utils.html import format_html, format_html_join
+from django.utils.text import Truncator
+from django.utils.translation import gettext, ngettext
+
+from django.contrib.admin.templatetags.admin_urls import admin_urlname
 
 from . import services
 from .models import Channel, DraftPost, Post, PostMedia, ScheduledPost
@@ -55,6 +61,21 @@ def media_public_url(media: PostMedia) -> str:
             return settings.MEDIA_URL.rstrip("/") + "/" + rel.as_posix()
     src = (media.source_url or "").strip()
     return src
+
+
+IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".tiff"}
+VIDEO_EXTENSIONS = {".mp4", ".mov", ".m4v", ".avi", ".mkv", ".webm", ".mpg", ".mpeg"}
+
+
+def guess_media_type(name: str, content_type: str = "") -> str:
+    name = (name or "").lower()
+    content_type = (content_type or "").lower()
+    suffix = Path(name).suffix
+    if content_type.startswith("image/") or suffix in IMAGE_EXTENSIONS:
+        return "photo"
+    if content_type.startswith("video/") or suffix in VIDEO_EXTENSIONS:
+        return "video"
+    return "doc"
 
 
 
@@ -114,6 +135,8 @@ class PostMediaInlineForm(forms.ModelForm):
         self.fields["source_url"].widget.attrs["data-preview-source"] = "1"
         self.fields["upload"].widget.attrs.setdefault("accept", "image/*,video/*")
         self.fields["upload"].widget.attrs["data-preview-upload"] = "1"
+        self.fields["type"].required = False
+        self.fields["type"].widget = forms.HiddenInput()
         self.fields["type"].widget.attrs["data-preview-type"] = "1"
         self.fields["order"].widget.attrs["data-preview-order"] = "1"
         self.fields["has_spoiler"].widget.attrs["data-preview-spoiler"] = "1"
@@ -141,6 +164,16 @@ class PostMediaInlineForm(forms.ModelForm):
         url = (cleaned.get("source_url") or "").strip()
         if not (upload or url or (self.instance and self.instance.pk)):
             raise forms.ValidationError("Dodaj plik lub URL dla medium.")
+
+        guessed = None
+        if upload:
+            guessed = guess_media_type(getattr(upload, "name", ""), getattr(upload, "content_type", ""))
+        elif url:
+            guessed = guess_media_type(url)
+
+        if guessed:
+            cleaned["type"] = guessed
+        cleaned["type"] = cleaned.get("type") or (self.instance.type if self.instance and self.instance.pk else "photo")
         return cleaned
 
     def save(self, commit=True):
@@ -289,6 +322,10 @@ class BasePostAdmin(admin.ModelAdmin):
                     "src": url,
                     "type": media.type or "photo",
                     "name": filename,
+                    "resolver": getattr(media, "resolver", ""),
+                    "reference": media.reference_data if isinstance(media.reference_data, dict) else {},
+                    "source_url": media.source_url or "",
+                    "cache_path": media.cache_path or "",
                 })
         return urls
 
@@ -379,9 +416,56 @@ class BasePostAdmin(admin.ModelAdmin):
         context["preview_media_json"] = preview.get("media_json", "[]")
         if obj and obj.pk:
             context["rewrite_url"] = self._object_url(obj, "rewrite")
+            context["status_url"] = self._object_url(obj, "status")
         channel_meta = list(Channel.objects.values("id", "name", "max_chars", "emoji_min", "emoji_max", "no_links_in_text"))
         context["channel_metadata_json"] = self._serialize_media(channel_meta)
         return super().render_change_form(request, context, add=add, change=change, form_url=form_url, obj=obj)
+
+    def _serialize_post_state(self, post: Post) -> dict:
+        channel_name = post.channel.name if post.channel_id and post.channel else ""
+        scheduled_iso = None
+        scheduled_date = ""
+        scheduled_time = ""
+        scheduled_display = ""
+        if post.scheduled_at:
+            scheduled_local = timezone.localtime(post.scheduled_at)
+            scheduled_iso = scheduled_local.isoformat()
+            scheduled_date = scheduled_local.strftime("%Y-%m-%d")
+            scheduled_time = scheduled_local.strftime("%H:%M:%S")
+            scheduled_display = date_format(scheduled_local, "d.m.Y H:i")
+        return {
+            "id": post.pk,
+            "text": post.text,
+            "status": post.status,
+            "status_label": post.get_status_display(),
+            "schedule_mode": post.schedule_mode,
+            "schedule_mode_label": post.get_schedule_mode_display(),
+            "scheduled_at": scheduled_iso,
+            "scheduled_date": scheduled_date,
+            "scheduled_time": scheduled_time,
+            "scheduled_display": scheduled_display,
+            "channel_id": post.channel_id,
+            "channel_name": channel_name,
+            "generated_at": timezone.now().isoformat(),
+        }
+
+    def _serialize_media_state(self, media_items: Iterable[PostMedia]) -> list[dict]:
+        serialized: list[dict] = []
+        for media in media_items:
+            public_url = self._media_to_url(media)
+            name_source = media.cache_path or media.source_url or ""
+            serialized.append(
+                {
+                    "id": media.pk,
+                    "type": media.type or "photo",
+                    "order": media.order,
+                    "has_spoiler": media.has_spoiler,
+                    "source_url": media.source_url or "",
+                    "media_public_url": public_url,
+                    "name": Path(name_source).name if name_source else "",
+                }
+            )
+        return serialized
 
     def _filters_session_key(self) -> str:
         opts = self.model._meta
@@ -412,7 +496,10 @@ class BasePostAdmin(admin.ModelAdmin):
         for key, value in saved_filters.items():
             if key in params:
                 continue
-            params[key] = value
+            if isinstance(value, (list, tuple)):
+                params.setlist(key, list(value))
+            else:
+                params[key] = value
             updated = True
         if saved_search and SEARCH_VAR not in params:
             params[SEARCH_VAR] = saved_search
@@ -441,6 +528,42 @@ class BasePostAdmin(admin.ModelAdmin):
         else:
             request.session.pop(session_key, None)
 
+    cards_refresh_interval_ms = 20000
+
+    def get_cards_refresh_interval(self) -> int:
+        interval = int(self.cards_refresh_interval_ms or 0)
+        return interval if interval > 0 else 20000
+
+    def _is_cards_partial_request(self, request) -> bool:
+        if request.GET.get("_partial") == "cards":
+            return True
+        requested_with = request.headers.get("X-Requested-With") or request.META.get("HTTP_X_REQUESTED_WITH", "")
+        return requested_with.lower() == "xmlhttprequest" and request.GET.get("_cards") == "1"
+
+    def _render_cards_partial(self, request, context):
+        cl = context.get("cl")
+        if cl is None:
+            cl = type("EmptyChangeList", (), {"result_list": [], "result_count": 0})()
+        partial_context = {
+            "cl": cl,
+            "action_checkbox_name": context.get("action_checkbox_name", helpers.ACTION_CHECKBOX_NAME),
+            "actions_selection_counter": context.get("actions_selection_counter"),
+            "selection_note_template": context.get(
+                "selection_note_template",
+                gettext("%(sel)s of %(cnt)s selected"),
+            ),
+            "selection_note_all_template": context.get(
+                "selection_note_all_template",
+                ngettext("%(total_count)s selected", "All %(total_count)s selected", getattr(cl, "result_count", 0)),
+            ),
+            "post_cards_refresh_interval": context.get("post_cards_refresh_interval", self.get_cards_refresh_interval()),
+        }
+        return TemplateResponse(
+            request,
+            "admin/posts/includes/post_card_grid.html",
+            partial_context,
+        )
+
     def changelist_view(self, request, extra_context=None):
         redirect_response = self._restore_filters_if_needed(request)
         if redirect_response is not None:
@@ -452,6 +575,17 @@ class BasePostAdmin(admin.ModelAdmin):
             remembered = bool(request.session.get(self._filters_session_key()))
             if cl:
                 response.context_data.setdefault("action_checkbox_name", helpers.ACTION_CHECKBOX_NAME)
+                response.context_data.setdefault(
+                    "selection_note_template",
+                    gettext("%(sel)s of %(cnt)s selected"),
+                )
+                response.context_data.setdefault(
+                    "selection_note_all_template",
+                    ngettext("%(total_count)s selected", "All %(total_count)s selected", cl.result_count),
+                )
+                response.context_data.setdefault(
+                    "post_cards_refresh_interval", self.get_cards_refresh_interval()
+                )
                 for post in cl.result_list:
                     post.preview_media = self._build_preview_media(post)
                     post.change_url = self._object_url(post, "change")
@@ -460,9 +594,14 @@ class BasePostAdmin(admin.ModelAdmin):
                     post.rewrite_url = self._object_url(post, "rewrite")
                     post.approve_url = self.get_approve_url(post)
                     post.is_draft = post.status == Post.Status.DRAFT
+                    metadata = post.source_metadata if isinstance(getattr(post, "source_metadata", {}), dict) else {}
+                    post.source_entries = metadata.get("media", []) if isinstance(metadata, dict) else []
                 self._store_filters_in_session(request, cl)
                 remembered = bool(request.session.get(self._filters_session_key()))
+            response.context_data.setdefault("request", request)
             response.context_data["session_filters_remembered"] = remembered
+            if self._is_cards_partial_request(request):
+                return self._render_cards_partial(request, response.context_data)
         return response
 
     def get_approve_url(self, post):
@@ -482,8 +621,31 @@ class BasePostAdmin(admin.ModelAdmin):
                 self.admin_site.admin_view(self.rewrite_view),
                 name=f"{opts.app_label}_{opts.model_name}_rewrite",
             ),
+            path(
+                "<int:object_id>/status/",
+                self.admin_site.admin_view(self.status_view),
+                name=f"{opts.app_label}_{opts.model_name}_status",
+            ),
         ]
         return custom + urls
+
+    def status_view(self, request, object_id):
+        if request.method != "GET":
+            raise PermissionDenied
+        queryset = (
+            self.model._default_manager.select_related("channel").prefetch_related("media")
+        )
+        post = get_object_or_404(queryset, pk=object_id)
+        if not (
+            self.has_view_permission(request, post)
+            or self.has_change_permission(request, post)
+        ):
+            raise PermissionDenied
+        data = {
+            "post": self._serialize_post_state(post),
+            "media": self._serialize_media_state(post.media.all()),
+        }
+        return JsonResponse(data, encoder=DjangoJSONEncoder)
 
     def reschedule_view(self, request, object_id):
         post = get_object_or_404(self.model, pk=object_id)
@@ -583,12 +745,14 @@ class BasePostAdmin(admin.ModelAdmin):
 
     @admin.action(description="Przelicz slot AUTO")
     def act_schedule(self, request, qs):
-        for p in qs: services.assign_auto_slot(p)
+        for post in qs:
+            services.assign_auto_slot(post)
 
     @admin.action(description="Opublikuj teraz")
     def act_publish_now(self, request, qs):
         from .tasks import publish_post
-        for p in qs: publish_post.delay(p.id)
+        for post in qs:
+            publish_post.delay(post.id)
 
     @admin.action(description="Usuń")
     def act_delete(self, request, qs):
@@ -657,4 +821,139 @@ class ScheduledPostAdmin(BasePostAdmin):
 
 @admin.register(PostMedia)
 class PostMediaAdmin(admin.ModelAdmin):
-    list_display = ("id","post","type","order","has_spoiler","cache_path","tg_file_id")
+    list_display = (
+        "id",
+        "preview",
+        "post_with_channel_display",
+        "type",
+        "resolver",
+        "source_link",
+        "related_posts",
+        "order",
+        "has_spoiler",
+        "created_at",
+        "tg_file_id",
+    )
+    list_select_related = ("post", "post__channel")
+    ordering = ("-created_at", "-id")
+
+    def get_queryset(self, request):
+        qs = super().get_queryset(request)
+        self._related_posts_cache: dict[str, list[Post]] = {}
+        return qs.select_related("post", "post__channel")
+
+    @admin.display(description="Wpis", ordering="post__id")
+    def post_with_channel_display(self, obj: PostMedia) -> str:
+        post = obj.post
+        post_id = getattr(post, "id", None)
+        if not post_id:
+            return "—"
+        channel = getattr(post, "channel", None)
+        channel_name = getattr(channel, "name", "?")
+        link = self._reverse_post_change_url(post, post_id)
+        if not link:
+            return format_html("#{} – {}", post_id, channel_name)
+        return format_html("<a href='{}'>#{} – {}</a>", link, post_id, channel_name)
+
+    @admin.display(description="Podgląd")
+    def preview(self, obj: PostMedia) -> str:
+        url = media_public_url(obj)
+        if not url:
+            return "—"
+        if obj.type == "photo":
+            return format_html(
+                "<img src='{}' alt='' style='max-height:80px;max-width:120px;"
+                "object-fit:cover;border-radius:4px;' />",
+                url,
+            )
+        if obj.type == "video":
+            return format_html(
+                "<video src='{}' controls style='max-height:80px;max-width:120px;'>"
+                "Twoja przeglądarka nie obsługuje podglądu wideo.</video>",
+                url,
+            )
+        return format_html(
+            "<a href='{}' target='_blank' rel='noopener'>Pobierz</a>",
+            url,
+        )
+
+    @admin.display(description="Źródłowy URL", ordering="source_url")
+    def source_link(self, obj: PostMedia) -> str:
+        reference = obj.reference_data if isinstance(obj.reference_data, dict) else {}
+        original = (reference.get("original_url") or reference.get("tg_post_url") or "").strip()
+        resolved = (obj.source_url or "").strip()
+        parts = []
+        if original:
+            parts.append(
+                format_html(
+                    "<a href='{}' target='_blank' rel='noopener'>{}</a>",
+                    original,
+                    Truncator(original).chars(60),
+                )
+            )
+        if resolved and (not original or resolved != original):
+            parts.append(
+                format_html(
+                    "<a href='{}' target='_blank' rel='noopener'>{}</a>",
+                    resolved,
+                    Truncator(resolved).chars(60),
+                )
+            )
+        if not parts:
+            return "—"
+        return format_html_join("<br>", "{}", ((p,) for p in parts))
+
+    @admin.display(description="Powiązane posty")
+    def related_posts(self, obj: PostMedia) -> str:
+        posts = self._get_related_posts(obj)
+        if not posts:
+            return "—"
+        items = []
+        for related in posts:
+            label = f"#{related.id} – {getattr(related.channel, 'name', '?')}"
+            link = self._reverse_post_change_url(related, related.id)
+            if link:
+                items.append(format_html("<a href='{}'>{}</a>", link, label))
+            else:
+                items.append(label)
+        return format_html_join("<br>", "{}", ((item,) for item in items))
+
+    def _get_related_posts(self, obj: PostMedia) -> list[Post]:
+        ref = obj.reference_data or {}
+        ref_url = ""
+        if isinstance(ref, dict):
+            ref_url = (ref.get("tg_post_url") or ref.get("original_url") or "").strip()
+        key = ref_url or (obj.source_url or "").strip()
+        if not key:
+            return []
+        cached = self._related_posts_cache.get(key)
+        if cached is not None:
+            return [post for post in cached if post.id != obj.post_id]
+        qs = Post.objects.select_related("channel").distinct()
+        if ref_url:
+            qs = qs.filter(
+                Q(media__reference_data__contains={"tg_post_url": ref_url})
+                | Q(media__reference_data__contains={"original_url": ref_url})
+            )
+        else:
+            qs = qs.filter(media__source_url=obj.source_url)
+        posts = list(qs)
+        self._related_posts_cache[key] = posts
+        return [post for post in posts if post.id != obj.post_id]
+
+    def _reverse_post_change_url(self, post: Post, post_id: int) -> str | None:
+        admin_models = [post.__class__, DraftPost, ScheduledPost, Post]
+        seen = set()
+        for model in admin_models:
+            opts = getattr(model, "_meta", None)
+            if opts is None:
+                continue
+            key = (opts.app_label, opts.model_name)
+            if key in seen:
+                continue
+            seen.add(key)
+            try:
+                return reverse(f"admin:{opts.app_label}_{opts.model_name}_change", args=[post_id])
+            except NoReverseMatch:
+                continue
+        return None

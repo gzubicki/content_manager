@@ -45,8 +45,8 @@ def task_publish_due():
 async def _publish_async(post: Post):
     bot = services._bot_for(post.channel)
     if bot is None:
-        logger.warning(
-            "Skipping publish for channel %s (%s): missing bot token",
+        logger.error(
+            "Cannot publish for channel %s (%s): missing bot token. Configure Channel.bot_token to enable publishing.",
             post.channel_id,
             getattr(post.channel, "slug", None),
         )

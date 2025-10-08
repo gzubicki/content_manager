@@ -52,6 +52,69 @@
   }
 
   document.addEventListener("DOMContentLoaded", function(){
+    const IMAGE_EXT = new Set([".jpg",".jpeg",".png",".gif",".webp",".bmp",".tiff"]);
+    const VIDEO_EXT = new Set([".mp4",".mov",".m4v",".avi",".mkv",".webm",".mpg",".mpeg"]);
+
+    function normalizeExtension(value){
+      return value ? value.toLowerCase().replace(/^.*(\.[a-z0-9]+)(?:\?.*)?$/, "$1") : "";
+    }
+
+    function guessMediaType(name, mime){
+      const lowerMime = (mime || "").toLowerCase();
+      const ext = normalizeExtension(name || "");
+      if (lowerMime.startsWith("image/") || IMAGE_EXT.has(ext)){
+        return "photo";
+      }
+      if (lowerMime.startsWith("video/") || VIDEO_EXT.has(ext)){
+        return "video";
+      }
+      return "doc";
+    }
+
+    function applyGuessedType(form, hint){
+      if (!form || !hint){
+        return;
+      }
+      if (form.dataset.typeManuallySet === "1"){
+        return;
+      }
+      const typeField = form.querySelector("[data-preview-type]");
+      if (!typeField){
+        return;
+      }
+      const current = typeField.value;
+      if (current === hint){
+        return;
+      }
+      typeField.value = hint;
+      const evt = new Event("change", { bubbles: true });
+      typeField.dispatchEvent(evt);
+    }
+
+    function guessFromUpload(form, input){
+      if (!input){
+        return;
+      }
+      const file = input.files && input.files[0];
+      if (!file){
+        return;
+      }
+      const guessed = guessMediaType(file.name, file.type);
+      applyGuessedType(form, guessed);
+    }
+
+    function guessFromSource(form, input){
+      if (!input){
+        return;
+      }
+      const value = (input.value || input.getAttribute("data-existing-src") || "").trim();
+      if (!value){
+        return;
+      }
+      const guessed = guessMediaType(value, "");
+      applyGuessedType(form, guessed);
+    }
+
     const previewRoot = document.querySelector("[data-preview-card-root]");
     if (!previewRoot){
       return;
@@ -161,13 +224,98 @@
     }
     updateScheduled();
 
+    function ensurePreviewCell(form){
+      let previewCell = form.querySelector('[data-post-media-preview]');
+      if (previewCell){
+        return previewCell;
+      }
+      previewCell = form.querySelector('.field-existing_file .readonly');
+      if (previewCell){
+        previewCell.setAttribute('data-post-media-preview', '1');
+        return previewCell;
+      }
+      previewCell = document.createElement('div');
+      previewCell.className = 'post-media-inline-preview';
+      previewCell.setAttribute('data-post-media-preview', '1');
+      previewCell.textContent = '—';
+      const firstGroup = form.querySelector('.form-group, p');
+      if (firstGroup && firstGroup.parentNode){
+        firstGroup.parentNode.insertBefore(previewCell, firstGroup);
+      } else {
+        form.insertBefore(previewCell, form.firstChild);
+      }
+      return previewCell;
+    }
+
+    function updatePreviewCell(previewCell, html){
+      if (!previewCell){
+        return;
+      }
+      if (html){
+        previewCell.innerHTML = html;
+        previewCell.setAttribute('data-has-preview', '1');
+      } else {
+        previewCell.innerHTML = '—';
+        previewCell.removeAttribute('data-has-preview');
+      }
+      previewCell.classList.remove('is-loading', 'has-error');
+    }
+
+    function setInlinePreview(form, item){
+      const previewCell = ensurePreviewCell(form);
+      if (!previewCell){
+        return;
+      }
+      if (item && item.src){
+        const mediaType = item.type || 'photo';
+        if (mediaType === 'photo'){
+          previewCell.classList.add('is-loading');
+          updatePreviewCell(previewCell, '<span class="post-media-inline-spinner"></span>');
+          const img = new Image();
+          img.onload = function(){
+            previewCell.classList.remove('is-loading');
+            updatePreviewCell(previewCell, `<img src="${escapeAttr(item.src)}" alt="">`);
+          };
+          img.onerror = function(){
+            previewCell.classList.remove('is-loading');
+            previewCell.classList.add('has-error');
+            updatePreviewCell(previewCell, '<span class="post-media-inline-error">Nie można załadować podglądu</span>');
+          };
+          img.src = item.src;
+          return;
+        }
+        if (mediaType === 'video'){
+          previewCell.classList.add('is-loading');
+          updatePreviewCell(previewCell, '<span class="post-media-inline-spinner"></span>');
+          const video = document.createElement('video');
+          video.src = item.src;
+          video.preload = 'metadata';
+          video.muted = true;
+          video.playsInline = true;
+          video.onloadeddata = function(){
+            previewCell.classList.remove('is-loading');
+            updatePreviewCell(previewCell, renderMediaItem(item));
+          };
+          video.onerror = function(){
+            previewCell.classList.remove('is-loading');
+            previewCell.classList.add('has-error');
+            updatePreviewCell(previewCell, '<span class="post-media-inline-error">Nie można załadować podglądu</span>');
+          };
+          video.load();
+          return;
+        }
+        updatePreviewCell(previewCell, renderMediaItem(item));
+      } else {
+        updatePreviewCell(previewCell, null);
+      }
+    }
+
     function readInlineMedia(){
-      const group = document.getElementById("postmedia_set-group");
-      if (!group){
+      if (!inlineGroup){
         return state.media.slice();
       }
       const collected = [];
-      const forms = group.querySelectorAll(".inline-related");
+      const forms = inlineGroup.querySelectorAll(".inline-related");
       forms.forEach(function(form){
         if (form.classList.contains("empty-form")){
           return;
@@ -201,16 +349,20 @@
           src = sourceField.value.trim() || sourceField.getAttribute("data-existing-src") || "";
           name = sourceField.getAttribute("data-existing-name") || src.split("/").pop();
         }
+        const mediaType = typeField && typeField.value ? typeField.value : "photo";
+        const orderValue = parseFloat(orderField ? orderField.value : "0") || 0;
         if (!src){
+          setInlinePreview(form, null);
           return;
         }
-        const orderValue = parseFloat(orderField ? orderField.value : "0") || 0;
-        collected.push({
+        const mediaItem = {
           src: src,
-          type: typeField.value || "photo",
+          type: mediaType,
           name: name,
           order: orderValue
-        });
+        };
+        setInlinePreview(form, mediaItem);
+        collected.push(mediaItem);
       });
       collected.sort(function(a, b){ return a.order - b.order; });
       return collected;
@@ -221,8 +373,50 @@
       render();
     }
 
-    const inlineGroup = document.getElementById("postmedia_set-group");
+    const inlineGroup = document.querySelector('[data-inline-formset][id$="-group"]');
     if (inlineGroup){
+      inlineGroup.addEventListener("change", function(event){
+        const target = event.target;
+        if (!target){
+          return;
+        }
+        const form = target.closest(".inline-related");
+        if (!form){
+          return;
+        }
+        if (target.matches("[data-preview-type]")){
+          if (event.isTrusted){
+            form.dataset.typeManuallySet = "1";
+          }
+          return;
+        }
+        if (target.matches("[data-preview-upload]")){
+          delete form.dataset.typeManuallySet;
+          guessFromUpload(form, target);
+        }
+        if (target.matches("[data-preview-source]")){
+          delete form.dataset.typeManuallySet;
+          guessFromSource(form, target);
+        }
+      });
+
+      inlineGroup.addEventListener("input", function(event){
+        const target = event.target;
+        if (!target){
+          return;
+        }
+        const form = target.closest(".inline-related");
+        if (!form){
+          return;
+        }
+        if (target.matches("[data-preview-upload]")){
+          guessFromUpload(form, target);
+        }
+        if (target.matches("[data-preview-source]")){
+          guessFromSource(form, target);
+        }
+      });
+
       const handler = function(event){
         const target = event.target;
         if (!target){
@@ -239,9 +433,39 @@
         addRow.addEventListener("click", function(){
           setTimeout(function(){
             refreshMedia();
+            const newForm = inlineGroup.querySelector(".inline-related:last-child");
+            if (newForm){
+              const upload = newForm.querySelector("[data-preview-upload]");
+              const source = newForm.querySelector("[data-preview-source]");
+              guessFromUpload(newForm, upload);
+              guessFromSource(newForm, source);
+            }
           }, 50);
         });
       }
+    }
+
+    const bridge = {
+      state,
+      render,
+      refreshMedia,
+      readInlineMedia,
+      setMedia(media){
+        state.media = Array.isArray(media) ? media.slice() : [];
+        render();
+      }
+    };
+    window.postEditBridge = bridge;
+    try {
+      if (typeof CustomEvent === "function"){
+        document.dispatchEvent(new CustomEvent("post-edit:ready", { detail: bridge }));
+      } else if (document.createEvent){
+        const evt = document.createEvent("CustomEvent");
+        evt.initCustomEvent("post-edit:ready", false, false, bridge);
+        document.dispatchEvent(evt);
+      }
+    } catch(err){
+      // noop – event dispatch failure shouldn't block preview initialisation
     }
 
     render();

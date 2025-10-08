@@ -4,14 +4,14 @@
 {% block extrahead %}
   {{ block.super }}
   {{ media }}
-  <script defer src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
-  <script defer src="https://unpkg.com/@vuepic/vue-datepicker@latest/dist/vue-datepicker.iife.js"></script>
+  <script defer src="{% static 'vendor/vue/vue.global.prod.js' %}"></script>
+  <script defer src="{% static 'vendor/vue-datepicker/vue-datepicker.iife.js' %}"></script>
   <script defer src="{% static 'admin/telegram_editor.js' %}"></script>
 {% endblock %}
 
 {% block extrastyle %}
   {{ block.super }}
-  <link rel="stylesheet" href="https://unpkg.com/@vuepic/vue-datepicker@latest/dist/main.css">
+  <link rel="stylesheet" href="{% static 'vendor/vue-datepicker/vue-datepicker.css' %}">
   <link rel="stylesheet" href="{% static 'admin/telegram_editor.css' %}">
 {% endblock %}
 
@@ -19,6 +19,12 @@
   <div id="content" class="content">
     <h1>{{ title }}</h1>
     <div id="content-main">
+      {% if form.errors %}
+        <p class="errornote">
+          {% blocktranslate count counter=form.errors|length %}Popraw zaznaczony błąd.{% plural %}Popraw zaznaczone błędy.{% endblocktranslate %}
+        </p>
+        {{ form.non_field_errors }}
+      {% endif %}
       <form method="post" novalidate>
         {% csrf_token %}
         <fieldset class="module aligned">

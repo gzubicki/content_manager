@@ -60,6 +60,7 @@ class Post(models.Model):
     generated_prompt = models.TextField("Prompt generujący", blank=True, default="")
     expires_at = models.DateTimeField("Wygasa", null=True, blank=True)
     message_id = models.BigIntegerField("ID wiadomości (tekst)", null=True, blank=True)
+    source_metadata = models.JSONField("Metadane źródłowe", blank=True, default=dict)
 
     class Meta:
         verbose_name = "Wpis"
@@ -93,6 +94,8 @@ class PostMedia(models.Model):
     post = models.ForeignKey(Post, verbose_name="Wpis", related_name="media", on_delete=models.CASCADE)
     type = models.CharField("Typ", max_length=8, choices=TYPE)
     source_url = models.TextField("Źródłowy URL", blank=True, default="")
+    resolver = models.CharField("Resolver", max_length=64, blank=True, default="")
+    reference_data = models.JSONField("Dane źródła", blank=True, default=dict)
     cache_path = models.TextField("Ścieżka cache", blank=True, default="")
     tg_file_id = models.TextField("Telegram file_id", blank=True, default="")
     order = models.PositiveIntegerField("Kolejność", default=0)

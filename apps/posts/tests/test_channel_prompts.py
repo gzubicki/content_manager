@@ -24,7 +24,7 @@ class ChannelPromptPropagationTest(TestCase):
 
     def test_generate_payload_adds_channel_rules_to_prompts(self):
         with patch("apps.posts.services.gpt_generate_text") as mock_gpt:
-            mock_gpt.return_value = json.dumps({"post_text": "tekst", "media": []})
+            mock_gpt.return_value = json.dumps({"post": {"text": "tekst"}, "media": []})
             services.gpt_generate_post_payload(self.channel)
 
         system_prompt, user_prompt = mock_gpt.call_args[0][:2]
@@ -33,10 +33,14 @@ class ChannelPromptPropagationTest(TestCase):
         self.assertIn("Liczba emoji", system_prompt)
         self.assertIn("linia1", system_prompt)
         self.assertIn("linia2", system_prompt)
-        self.assertIn("Nie dodawaj linków", system_prompt)
+        self.assertIn("Nie dodawaj linków w treści.", system_prompt)
 
         self.assertIn("limicie znaków", user_prompt)
-        self.assertIn("emoji, stopki i zakazów", user_prompt)
+        self.assertIn("resolver (np. twitter/telegram/instagram/rss)", user_prompt)
+        self.assertIn("reference – obiekt z prawdziwymi identyfikatorami", user_prompt)
+        self.assertIn("reference.source_locator", user_prompt)
+        self.assertIn("angielskich nazw pól", user_prompt)
+        self.assertIn("Nie podawaj bezpośrednich linków", user_prompt)
         self.assertNotIn("linia1", user_prompt)
         self.assertNotIn("linia2", user_prompt)
         self.assertNotIn("Nie dodawaj linków", user_prompt)
