@@ -17,11 +17,14 @@ from django.core.files.storage import default_storage
 from django.http import JsonResponse
 from django.shortcuts import get_object_or_404, redirect
 from django.template.response import TemplateResponse
-from django.urls import path, reverse
+from django.urls import NoReverseMatch, path, reverse
 from django.utils import timezone
 from django.utils.formats import date_format
-from django.utils.html import format_html
+from django.utils.html import format_html, format_html_join
+from django.utils.text import Truncator
 from django.utils.translation import gettext, ngettext
+
+from django.contrib.admin.templatetags.admin_urls import admin_urlname
 
 from . import services
 from .models import Channel, DraftPost, Post, PostMedia, ScheduledPost
@@ -811,4 +814,134 @@ class ScheduledPostAdmin(BasePostAdmin):
 
 @admin.register(PostMedia)
 class PostMediaAdmin(admin.ModelAdmin):
-    list_display = ("id","post","type","order","has_spoiler","cache_path","tg_file_id")
+    list_display = (
+        "id",
+        "preview",
+        "post_with_channel",
+        "type",
+        "source_link",
+        "related_posts",
+        "order",
+        "has_spoiler",
+        "created_at",
+        "tg_file_id",
+    )
+    list_select_related = ("post", "post__channel")
+    ordering = ("-created_at", "-id")
+
+    def get_queryset(self, request):
+        qs = super().get_queryset(request)
+        self._related_posts_cache: dict[str, list[Post]] = {}
+        self._post_admin_url_cache: dict[int, str | None] = {}
+        return qs.select_related("post", "post__channel")
+
+    @admin.display(description="Wpis", ordering="post__id")
+    def post_with_channel(self, obj: PostMedia) -> str:
+        post = obj.post
+        post_id = getattr(post, "id", None)
+        if not post_id:
+            return "—"
+        channel = getattr(post, "channel", None)
+        channel_name = getattr(channel, "name", "?")
+        url = self._resolve_post_change_url(post)
+        label = f"#{post_id} – {channel_name}"
+        if not url:
+            return format_html("{}", label)
+        return format_html("<a href='{}'>{}</a>", url, label)
+
+    @admin.display(description="Podgląd")
+    def preview(self, obj: PostMedia) -> str:
+        url = media_public_url(obj)
+        if not url:
+            return "—"
+        if obj.type == "photo":
+            return format_html(
+                "<img src='{}' alt='' style='max-height:80px;max-width:120px;"
+                "object-fit:cover;border-radius:4px;' />",
+                url,
+            )
+        if obj.type == "video":
+            return format_html(
+                "<video src='{}' controls style='max-height:80px;max-width:120px;'>"
+                "Twoja przeglądarka nie obsługuje podglądu wideo.</video>",
+                url,
+            )
+        return format_html(
+            "<a href='{}' target='_blank' rel='noopener'>Pobierz</a>",
+            url,
+        )
+
+    @admin.display(description="Źródłowy URL", ordering="source_url")
+    def source_link(self, obj: PostMedia) -> str:
+        url = (obj.source_url or "").strip()
+        if not url:
+            return "—"
+        label = Truncator(url).chars(60)
+        return format_html(
+            "<a href='{}' target='_blank' rel='noopener'>{}</a>",
+            url,
+            label,
+        )
+
+    @admin.display(description="Powiązane posty")
+    def related_posts(self, obj: PostMedia) -> str:
+        posts = self._get_related_posts(obj)
+        if not posts:
+            return "—"
+        items: list[tuple[str]] = []
+        for post in posts:
+            channel_name = getattr(post.channel, "name", "?")
+            label = f"#{post.id} – {channel_name}"
+            url = self._resolve_post_change_url(post)
+            if url:
+                items.append((format_html("<a href='{}'>{}</a>", url, label),))
+            else:
+                items.append((format_html("{}", label),))
+        return format_html_join("<br>", "{}", items)
+
+    def _get_related_posts(self, obj: PostMedia) -> list[Post]:
+        source_url = (obj.source_url or "").strip()
+        if not source_url:
+            return []
+        cached = self._related_posts_cache.get(source_url)
+        if cached is not None:
+            return [post for post in cached if post.id != obj.post_id]
+        posts = list(
+            Post.objects.filter(media__source_url=source_url)
+            .select_related("channel")
+            .distinct()
+        )
+        self._related_posts_cache[source_url] = posts
+        return [post for post in posts if post.id != obj.post_id]
+
+    def _resolve_post_change_url(self, post: Post) -> str | None:
+        if not post or not post.pk:
+            return None
+        cache = getattr(self, "_post_admin_url_cache", None)
+        if cache is not None and post.pk in cache:
+            return cache[post.pk]
+
+        candidates: list[type[Post]] = []
+
+        def add_candidate(model: type[Post]) -> None:
+            if model in admin.site._registry and model not in candidates:
+                candidates.append(model)
+
+        if post.status == Post.Status.DRAFT:
+            add_candidate(DraftPost)
+        add_candidate(ScheduledPost)
+        add_candidate(DraftPost)
+        add_candidate(Post)
+
+        url: str | None = None
+        for model in candidates:
+            try:
+                url = reverse(admin_urlname(model._meta, "change"), args=[post.pk])
+            except NoReverseMatch:
+                continue
+            else:
+                break
+
+        if cache is not None:
+            cache[post.pk] = url
+        return url
