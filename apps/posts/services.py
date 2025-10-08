@@ -6,7 +6,7 @@ import os
 import textwrap
 import uuid
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import urlparse, unquote
 
 import httpx
 from openai import (
@@ -406,6 +406,23 @@ def _normalise_media_payload(media: Any, fallback_prompt: str) -> list[dict[str,
     return normalised[:5]
 
 
+def _media_source_snapshot(item: dict[str, Any]) -> dict[str, Any]:
+    snapshot: dict[str, Any] = {}
+    snapshot["type"] = str(item.get("type") or "").strip().lower()
+    snapshot["resolver"] = str(item.get("resolver") or item.get("source") or "").strip().lower()
+    snapshot["caption"] = str(item.get("caption") or "").strip()
+    snapshot["posted_at"] = str(item.get("posted_at") or "").strip()
+    snapshot_source = str(item.get("source_url") or item.get("url") or "").strip()
+    snapshot["source"] = snapshot_source
+    reference_raw = item.get("reference")
+    if isinstance(reference_raw, dict):
+        snapshot["reference"] = {k: reference_raw[k] for k in reference_raw if reference_raw[k] not in (None, "")}
+    else:
+        snapshot["reference"] = {}
+    snapshot["status"] = "pending"
+    return snapshot
+
+
 def _guess_extension(media_type: str, content_type: str | None = None) -> str:
     if content_type:
         guessed = mimetypes.guess_extension(content_type.split(";")[0].strip())
@@ -677,6 +694,9 @@ def _resolve_media_via_telegram(
             media_type=media_type,
             caption=caption,
         )
+    except telegram_resolver.TelegramMediaNotFound as exc:
+        logger.warning("Wbudowany resolver Telegram nie znalazł mediów (%s): %s", tg_url, exc)
+        return ""
     except telegram_resolver.TelegramResolverNotConfigured:
         logger.warning("Resolver Telegram nie został skonfigurowany – pomijam wbudowane pobieranie")
         return ""
@@ -876,33 +896,54 @@ def _media_expiry_deadline():
 
 def attach_media_from_payload(post: Post, media_payload: list[dict[str, Any]]):
     post.media.all().delete()
+    source_entries: list[dict[str, Any]] = []
     for idx, item in enumerate(media_payload):
+        if not isinstance(item, dict):
+            continue
         media_type = str(item.get("type", "photo") or "photo").strip().lower()
         if media_type == "image":
             media_type = "photo"
         if media_type not in {"photo", "video", "doc"}:
+            snapshot = _media_source_snapshot(item)
+            snapshot.update({"status": "skipped", "error": "unsupported_type"})
+            source_entries.append(snapshot)
             continue
+
+        snapshot = _media_source_snapshot(item)
+        resolver_name = snapshot.get("resolver", "")
+        reference_data = dict(snapshot.get("reference") or {})
+        original_source = snapshot.get("source", "")
+        caption = snapshot.get("caption", "")
+        posted_at = snapshot.get("posted_at", "")
         source_url = str(item.get("source_url") or item.get("url") or "").strip()
+
+        if source_url:
+            reference_data.setdefault("original_url", source_url)
+        elif original_source:
+            reference_data.setdefault("original_url", original_source)
+
+        source_entry = {
+            "type": media_type,
+            "resolver": resolver_name,
+            "caption": caption,
+            "posted_at": posted_at,
+            "source": source_url or original_source,
+            "reference": dict(reference_data),
+            "status": "pending",
+        }
+
         if not source_url:
-            resolver = str(item.get("resolver") or item.get("source") or "").strip().lower()
-            reference = item.get("reference") if isinstance(item.get("reference"), dict) else {}
-            caption = str(item.get("caption", "")).strip()
-            if resolver and reference:
+            if resolver_name and reference_data:
                 logger.info(
                     "Resolving media via %s for post %s (ref=%s)",
-                    resolver,
+                    resolver_name or "unknown",
                     post.id,
-                    reference,
+                    reference_data,
                 )
-                logger.info(
-                    "Scheduling media download for post %s via %s (reference=%s)",
-                    post.id,
-                    resolver,
-                    reference,
-                )
+                resolve_input = dict(reference_data)
                 source_url = _resolve_media_reference(
-                    resolver=resolver,
-                    reference=reference,
+                    resolver=resolver_name,
+                    reference=resolve_input,
                     media_type=media_type,
                     caption=caption,
                 )
@@ -910,25 +951,40 @@ def attach_media_from_payload(post: Post, media_payload: list[dict[str, Any]]):
                     logger.info(
                         "Resolved media for post %s via %s (url=%s)",
                         post.id,
-                        resolver,
+                        resolver_name or "unknown",
                         source_url,
                     )
             if not source_url:
-                logger.info(
-                    "Pomijam media typu %s bez url ani identyfikatora dla posta %s",
+                logger.warning(
+                    "Nie udało się pobrać medium typu %s dla posta %s (resolver=%s, reference=%s)",
                     media_type,
                     post.id,
+                    resolver_name or "brak",
+                    reference_data,
                 )
+                source_entry["status"] = "unresolved"
+                source_entry["error"] = "missing_source"
+                source_entries.append(source_entry)
                 continue
+
+        reference_data.setdefault("resolved_url", source_url)
+        if posted_at and "posted_at" not in reference_data:
+            reference_data["posted_at"] = posted_at
+        if caption and "caption" not in reference_data:
+            reference_data["caption"] = caption
+
         has_spoiler = item.get("has_spoiler")
         if has_spoiler is None and media_type == "photo":
             has_spoiler = bool(getattr(post.channel, "auto_blur_default", False))
         else:
             has_spoiler = bool(has_spoiler)
+
         pm = PostMedia.objects.create(
             post=post,
             type=media_type,
             source_url=source_url,
+            resolver=resolver_name,
+            reference_data=reference_data,
             order=idx,
             has_spoiler=has_spoiler,
         )
@@ -937,6 +993,9 @@ def attach_media_from_payload(post: Post, media_payload: list[dict[str, Any]]):
         except Exception:
             logger.exception("Nie udało się pobrać medium %s dla posta %s", pm.id, post.id)
             pm.delete()
+            source_entry["status"] = "error"
+            source_entry["error"] = "cache_failure"
+            source_entries.append(source_entry)
             continue
         if not cache_path:
             logger.info(
@@ -946,6 +1005,8 @@ def attach_media_from_payload(post: Post, media_payload: list[dict[str, Any]]):
                 source_url,
             )
             pm.delete()
+            source_entry["status"] = "skipped"
+            source_entry["error"] = "empty_cache"
         else:
             logger.info(
                 "Media download completed for post %s (media_id=%s, path=%s)",
@@ -953,6 +1014,14 @@ def attach_media_from_payload(post: Post, media_payload: list[dict[str, Any]]):
                 pm.id,
                 cache_path,
             )
+            reference_data.setdefault("cache_path", cache_path)
+            source_entry["status"] = "cached"
+            source_entry["reference"] = reference_data
+            source_entry["source"] = source_url
+        source_entries.append(source_entry)
+
+    post.source_metadata = {"media": source_entries}
+    post.save(update_fields=["source_metadata"])
 
 
 def create_post_from_payload(channel: Channel, payload: dict[str, Any]) -> Post:
@@ -963,14 +1032,20 @@ def create_post_from_payload(channel: Channel, payload: dict[str, Any]) -> Post:
     raw_payload = payload.get("raw_response")
     if raw_payload is None:
         raw_payload = json.dumps(payload, ensure_ascii=False)
+    media_items = payload.get("media") or []
+    source_meta_entries: list[dict[str, Any]] = []
+    if isinstance(media_items, list):
+        for raw_item in media_items:
+            if isinstance(raw_item, dict):
+                source_meta_entries.append(_media_source_snapshot(raw_item))
     post = Post.objects.create(
         channel=channel,
         text=text,
         status="DRAFT",
         origin="gpt",
         generated_prompt=raw_payload,
+        source_metadata={"media": source_meta_entries} if source_meta_entries else {},
     )
-    media_items = payload.get("media") or []
     if isinstance(media_items, list):
         attach_media_from_payload(post, media_items)
     return post
@@ -1102,7 +1177,10 @@ def cache_media(pm: PostMedia):
         if not ext:
             ext = ".bin"
     else:
-        src = path if parsed.scheme == "file" else url
+        if parsed.scheme == "file":
+            src = unquote(path)
+        else:
+            src = url
         if not os.path.isabs(src):
             candidate = (media_root / src).resolve()
             if candidate.exists():

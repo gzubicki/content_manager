@@ -2,7 +2,7 @@ import asyncio
 import logging
 import os
 from pathlib import Path
-from typing import Optional
+from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import urlparse
 
 from django.conf import settings
@@ -17,9 +17,16 @@ except ImportError:  # pragma: no cover - optional dependency
 
 logger = logging.getLogger(__name__)
 
+_ALBUM_CACHE: Dict[Tuple[str, int], List[str]] = {}
+_ALBUM_CACHE_LIMIT = 128
+
 
 class TelegramResolverNotConfigured(RuntimeError):
     """Raised when Telegram resolver does not have required credentials."""
+
+
+class TelegramMediaNotFound(RuntimeError):
+    """Raised when Telegram message does not contain downloadable media."""
 
 
 def download_telegram_media(
@@ -68,15 +75,41 @@ def download_telegram_media(
             entity = await client.get_entity(chat)
             message = await client.get_messages(entity, ids=message_id)
             if not message or not message.media:
-                logger.info("Brak mediów w wiadomości Telegram %s/%s", chat, message_id)
-                return None
+                raise TelegramMediaNotFound(f"No media in Telegram message {chat}/{message_id}")
             dest_dir = Path(settings.MEDIA_ROOT) / "resolved" / "telegram"
             dest_dir.mkdir(parents=True, exist_ok=True)
-            file_path = await client.download_media(message, file=dest_dir)
-            if not file_path:
-                return None
-            return Path(file_path).resolve().as_uri()
+
+            grouped_id = getattr(message, "grouped_id", None)
+            cache_key = (chat, grouped_id or message_id)
+
+            cached = _ALBUM_CACHE.get(cache_key)
+            if cached:
+                next_uri = cached.pop(0)
+                if not cached:
+                    _ALBUM_CACHE.pop(cache_key, None)
+                return next_uri
+
+            messages_to_download = await _collect_album_messages(client, entity, message)
+            uris: List[str] = []
+            for item in messages_to_download:
+                if not getattr(item, "media", None):
+                    continue
+                file_path = await client.download_media(item, file=dest_dir)
+                if not file_path:
+                    continue
+                uris.append(Path(file_path).resolve().as_uri())
+
+            if not uris:
+                raise TelegramMediaNotFound(f"Unable to download media for {chat}/{message_id}")
+
+            if len(uris) > 1:
+                if len(_ALBUM_CACHE) >= _ALBUM_CACHE_LIMIT:
+                    _ALBUM_CACHE.pop(next(iter(_ALBUM_CACHE)))
+                _ALBUM_CACHE[cache_key] = uris[1:]
+            return uris[0]
         except TelegramResolverNotConfigured:
+            raise
+        except TelegramMediaNotFound:
             raise
         except RPCError as exc:  # pragma: no cover - network/api issues
             logger.warning("Telegram RPC error: %s", exc)
@@ -91,15 +124,19 @@ def download_telegram_media(
                 pass
 
     try:
-        return asyncio.run(_run()) or ""
+        result = asyncio.run(_run())
+        return result or ""
     except TelegramResolverNotConfigured:
+        raise
+    except TelegramMediaNotFound:
         raise
     except RuntimeError as exc:  # pragma: no cover - nested loop
         if "asyncio.run() cannot" in str(exc):
             loop = asyncio.new_event_loop()
             try:
                 asyncio.set_event_loop(loop)
-                return loop.run_until_complete(_run()) or ""
+                result = loop.run_until_complete(_run())
+                return result or ""
             finally:
                 loop.close()
         raise
@@ -135,3 +172,45 @@ def _parse_telegram_url(url: str):
         # urls with message slug? ignore
         return None, None
     return chat, message_id
+
+
+async def _collect_album_messages(client, entity, message):
+    grouped_id = getattr(message, "grouped_id", None)
+    if not grouped_id:
+        return [message]
+
+    ids = list(range(max(1, message.id - 16), message.id + 17))
+    fetched = await client.get_messages(entity, ids=ids)
+    album = [msg for msg in fetched if msg and getattr(msg, "media", None) and msg.grouped_id == grouped_id]
+    if not album:
+        return [message]
+    album.sort(key=lambda m: m.id)
+    unique: List[Any] = []
+    seen = set()
+    for msg in album:
+        if msg.id in seen:
+            continue
+        seen.add(msg.id)
+        unique.append(msg)
+    return unique or [message]
+
+
+async def _collect_album_messages(client, entity, message):
+    grouped_id = getattr(message, "grouped_id", None)
+    if not grouped_id:
+        return [message]
+
+    ids = list(range(max(1, message.id - 16), message.id + 17))
+    fetched = await client.get_messages(entity, ids=ids)
+    album = [msg for msg in fetched if msg and getattr(msg, "media", None) and msg.grouped_id == grouped_id]
+    if not album:
+        return [message]
+    album.sort(key=lambda m: m.id)
+    unique = []
+    seen = set()
+    for msg in album:
+        if msg.id in seen:
+            continue
+        seen.add(msg.id)
+        unique.append(msg)
+    return unique

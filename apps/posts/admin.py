@@ -18,6 +18,7 @@ from django.http import JsonResponse
 from django.shortcuts import get_object_or_404, redirect
 from django.template.response import TemplateResponse
 from django.urls import NoReverseMatch, path, reverse
+from django.db.models import Q
 from django.utils import timezone
 from django.utils.formats import date_format
 from django.utils.html import format_html, format_html_join
@@ -321,6 +322,10 @@ class BasePostAdmin(admin.ModelAdmin):
                     "src": url,
                     "type": media.type or "photo",
                     "name": filename,
+                    "resolver": getattr(media, "resolver", ""),
+                    "reference": media.reference_data if isinstance(media.reference_data, dict) else {},
+                    "source_url": media.source_url or "",
+                    "cache_path": media.cache_path or "",
                 })
         return urls
 
@@ -589,6 +594,8 @@ class BasePostAdmin(admin.ModelAdmin):
                     post.rewrite_url = self._object_url(post, "rewrite")
                     post.approve_url = self.get_approve_url(post)
                     post.is_draft = post.status == Post.Status.DRAFT
+                    metadata = post.source_metadata if isinstance(getattr(post, "source_metadata", {}), dict) else {}
+                    post.source_entries = metadata.get("media", []) if isinstance(metadata, dict) else []
                 self._store_filters_in_session(request, cl)
                 remembered = bool(request.session.get(self._filters_session_key()))
             response.context_data.setdefault("request", request)
@@ -817,8 +824,9 @@ class PostMediaAdmin(admin.ModelAdmin):
     list_display = (
         "id",
         "preview",
-        "post_with_channel",
+        "post_with_channel_display",
         "type",
+        "resolver",
         "source_link",
         "related_posts",
         "order",
@@ -835,18 +843,17 @@ class PostMediaAdmin(admin.ModelAdmin):
         return qs.select_related("post", "post__channel")
 
     @admin.display(description="Wpis", ordering="post__id")
-    def post_with_channel(self, obj: PostMedia) -> str:
+    def post_with_channel_display(self, obj: PostMedia) -> str:
         post = obj.post
         post_id = getattr(post, "id", None)
         if not post_id:
             return "—"
         channel = getattr(post, "channel", None)
         channel_name = getattr(channel, "name", "?")
-        url = reverse(
-            f"admin:{Post._meta.app_label}_{Post._meta.model_name}_change",
-            args=[post_id],
-        )
-        return format_html("<a href='{}'>#{} – {}</a>", url, post_id, channel_name)
+        link = self._reverse_post_change_url(post, post_id)
+        if not link:
+            return format_html("#{} – {}", post_id, channel_name)
+        return format_html("<a href='{}'>#{} – {}</a>", link, post_id, channel_name)
 
     @admin.display(description="Podgląd")
     def preview(self, obj: PostMedia) -> str:
@@ -872,48 +879,81 @@ class PostMediaAdmin(admin.ModelAdmin):
 
     @admin.display(description="Źródłowy URL", ordering="source_url")
     def source_link(self, obj: PostMedia) -> str:
-        url = (obj.source_url or "").strip()
-        if not url:
+        reference = obj.reference_data if isinstance(obj.reference_data, dict) else {}
+        original = (reference.get("original_url") or reference.get("tg_post_url") or "").strip()
+        resolved = (obj.source_url or "").strip()
+        parts = []
+        if original:
+            parts.append(
+                format_html(
+                    "<a href='{}' target='_blank' rel='noopener'>{}</a>",
+                    original,
+                    Truncator(original).chars(60),
+                )
+            )
+        if resolved and (not original or resolved != original):
+            parts.append(
+                format_html(
+                    "<a href='{}' target='_blank' rel='noopener'>{}</a>",
+                    resolved,
+                    Truncator(resolved).chars(60),
+                )
+            )
+        if not parts:
             return "—"
-        label = Truncator(url).chars(60)
-        return format_html(
-            "<a href='{}' target='_blank' rel='noopener'>{}</a>",
-            url,
-            label,
-        )
+        return format_html_join("<br>", "{}", ((p,) for p in parts))
 
     @admin.display(description="Powiązane posty")
     def related_posts(self, obj: PostMedia) -> str:
         posts = self._get_related_posts(obj)
         if not posts:
             return "—"
-        return format_html_join(
-            "<br>",
-            "<a href='{}'>#{} – {}</a>",
-            (
-                (
-                    reverse(
-                        f"admin:{Post._meta.app_label}_{Post._meta.model_name}_change",
-                        args=[post.id],
-                    ),
-                    post.id,
-                    getattr(post.channel, "name", "?"),
-                )
-                for post in posts
-            ),
-        )
+        items = []
+        for related in posts:
+            label = f"#{related.id} – {getattr(related.channel, 'name', '?')}"
+            link = self._reverse_post_change_url(related, related.id)
+            if link:
+                items.append(format_html("<a href='{}'>{}</a>", link, label))
+            else:
+                items.append(label)
+        return format_html_join("<br>", "{}", ((item,) for item in items))
 
     def _get_related_posts(self, obj: PostMedia) -> list[Post]:
-        source_url = (obj.source_url or "").strip()
-        if not source_url:
+        ref = obj.reference_data or {}
+        ref_url = ""
+        if isinstance(ref, dict):
+            ref_url = (ref.get("tg_post_url") or ref.get("original_url") or "").strip()
+        key = ref_url or (obj.source_url or "").strip()
+        if not key:
             return []
-        cached = self._related_posts_cache.get(source_url)
+        cached = self._related_posts_cache.get(key)
         if cached is not None:
             return [post for post in cached if post.id != obj.post_id]
-        posts = list(
-            Post.objects.filter(media__source_url=source_url)
-            .select_related("channel")
-            .distinct()
-        )
-        self._related_posts_cache[source_url] = posts
+        qs = Post.objects.select_related("channel").distinct()
+        if ref_url:
+            qs = qs.filter(
+                Q(media__reference_data__contains={"tg_post_url": ref_url})
+                | Q(media__reference_data__contains={"original_url": ref_url})
+            )
+        else:
+            qs = qs.filter(media__source_url=obj.source_url)
+        posts = list(qs)
+        self._related_posts_cache[key] = posts
         return [post for post in posts if post.id != obj.post_id]
+
+    def _reverse_post_change_url(self, post: Post, post_id: int) -> str | None:
+        admin_models = [post.__class__, DraftPost, ScheduledPost, Post]
+        seen = set()
+        for model in admin_models:
+            opts = getattr(model, "_meta", None)
+            if opts is None:
+                continue
+            key = (opts.app_label, opts.model_name)
+            if key in seen:
+                continue
+            seen.add(key)
+            try:
+                return reverse(f"admin:{opts.app_label}_{opts.model_name}_change", args=[post_id])
+            except NoReverseMatch:
+                continue
+        return None
