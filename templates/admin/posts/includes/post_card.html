@@ -39,6 +39,30 @@
     {% if post.approved_by %}
       <div><strong>Zatwierdził:</strong> {{ post.approved_by }}</div>
     {% endif %}
+    {% if post.source_entries %}
+      <div class="post-card__sources">
+        <strong>Źródła mediów:</strong>
+        <ul class="post-card__sources-list">
+          {% for entry in post.source_entries %}
+            <li>
+              {% if entry.resolver %}<span class="post-card__badge">{{ entry.resolver }}</span>{% endif %}
+              {% with ref=entry.reference %}
+                {% if ref.tg_post_url %}
+                  <a href="{{ ref.tg_post_url }}" target="_blank" rel="noopener">{{ ref.tg_post_url }}</a>
+                {% elif ref.original_url %}
+                  <a href="{{ ref.original_url }}" target="_blank" rel="noopener">{{ ref.original_url }}</a>
+                {% elif entry.source %}
+                  <span>{{ entry.source }}</span>
+                {% endif %}
+              {% endwith %}
+              {% if entry.posted_at %}<span class="post-card__source-meta">{{ entry.posted_at }}</span>{% endif %}
+              {% if entry.caption %}<div class="post-card__source-caption">{{ entry.caption }}</div>{% endif %}
+              {% if entry.status and entry.status != 'cached' %}<em class="post-card__source-status">({{ entry.status }})</em>{% endif %}
+            </li>
+          {% endfor %}
+        </ul>
+      </div>
+    {% endif %}
   </div>
   <div class="post-card__footer">
     <div class="post-card__actions">

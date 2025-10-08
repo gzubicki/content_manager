@@ -1,0 +1,92 @@
+{% extends "admin/base_site.html" %}
+{% load i18n %}
+
+{% block title %}{% trans "Telegram resolver authorization" %}{% endblock %}
+
+{% block breadcrumbs %}
+<div class="breadcrumbs">
+  <a href="{% url 'admin:index' %}">{% trans "Home" %}</a>
+  &rsaquo; {% trans "Telegram resolver" %}
+</div>
+{% endblock %}
+
+{% block content %}
+<h1>{% trans "Telegram resolver authorization" %}</h1>
+
+{% if config_error %}
+  <div class="messagelist"><div class="error">{{ config_error }}</div></div>
+{% endif %}
+
+<div class="module">
+  <h2>{% trans "Current status" %}</h2>
+  <p>
+    {% if authorized %}
+      {% if authorized_display %}
+        {% blocktrans with user=authorized_display %}Authorized as {{ user }}{% endblocktrans %}
+      {% else %}
+        {% trans "Authorized" %}
+      {% endif %}
+    {% else %}
+      {% trans "Not authorized." %}
+    {% endif %}
+  </p>
+  {% if config and config.session_mode == "path" %}
+    <p>{% blocktrans with path=config.session_path %}Session file: <code>{{ path }}</code>{% endblocktrans %}</p>
+  {% elif config and config.session_mode == "string" %}
+    <p>{% trans "Resolver uses a session string (environment variable TELEGRAM_RESOLVER_SESSION)." %}</p>
+  {% endif %}
+</div>
+
+{% if last_session_string %}
+  <div class="module">
+    <h2>{% trans "Session string" %}</h2>
+    <p>{% trans "Copy the value below to TELEGRAM_RESOLVER_SESSION:" %}</p>
+    <pre style="white-space: pre-wrap; word-break: break-all;">{{ last_session_string }}</pre>
+  </div>
+{% endif %}
+
+{% if config_ready %}
+  <div class="module">
+    <h2>
+      {% if state == "phone" %}{% trans "Step 1: phone number" %}
+      {% elif state == "code" %}{% trans "Step 2: verification code" %}
+      {% elif state == "password" %}{% trans "Step 3: two-factor password" %}
+      {% endif %}
+    </h2>
+
+    {% if state == "phone" %}
+      <form method="post" novalidate>
+        {% csrf_token %}
+        <input type="hidden" name="step" value="phone">
+        <table>
+          {{ phone_form.as_table }}
+        </table>
+        <input type="submit" class="button" value="{% trans 'Send code' %}">
+      </form>
+    {% elif state == "code" %}
+      <p>{% trans "Enter the code received in Telegram or via SMS." %}</p>
+      <form method="post" novalidate>
+        {% csrf_token %}
+        <input type="hidden" name="step" value="code">
+        <table>
+          {{ code_form.as_table }}
+        </table>
+        <input type="submit" class="button" value="{% trans 'Verify code' %}">
+      </form>
+      <p><a class="button" href="{% url 'telegram_resolver_login' %}?reset=1">{% trans "Start over" %}</a></p>
+    {% elif state == "password" %}
+      <p>{% trans "Enter your Telegram cloud password." %}</p>
+      <form method="post" novalidate>
+        {% csrf_token %}
+        <input type="hidden" name="step" value="password">
+        <table>
+          {{ password_form.as_table }}
+        </table>
+        <input type="submit" class="button" value="{% trans 'Verify password' %}">
+      </form>
+      <p><a class="button" href="{% url 'telegram_resolver_login' %}?reset=1">{% trans "Start over" %}</a></p>
+    {% endif %}
+  </div>
+{% endif %}
+
+{% endblock %}

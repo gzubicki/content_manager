@@ -5,8 +5,10 @@ from django.urls import path, re_path
 from django.views.generic import TemplateView
 
 from apps.accounts.views import telegram_login, telegram_bind
+from apps.posts.views import telegram_resolver_login
 
 urlpatterns = [
+    path("admin/tools/telegram-resolver/", telegram_resolver_login, name="telegram_resolver_login"),
     path("admin/", admin.site.urls),
     path("auth/telegram/login/", telegram_login, name="tg_login"),
     path("auth/telegram/bind/", telegram_bind, name="tg_bind"),
