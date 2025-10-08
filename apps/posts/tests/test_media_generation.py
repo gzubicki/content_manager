@@ -200,3 +200,28 @@ class MediaHandlingTest(TestCase):
         self.assertTrue(os.path.exists(path))
         with open(path, "rb") as fh:
             self.assertEqual(fh.read(), fake_bytes)
+
+    def test_cache_media_corrects_media_type(self) -> None:
+        pm = PostMedia.objects.create(
+            post=self.post,
+            type="photo",
+            source_url="https://example.com/video.mp4",
+            reference_data={}
+        )
+        fake_bytes = b"video-bytes"
+
+        class _Resp:
+            def __init__(self, content: bytes):
+                self.content = content
+                self.headers = {"content-type": "video/mp4"}
+
+            def raise_for_status(self) -> None:
+                return None
+
+        with patch("apps.posts.services.httpx.get", return_value=_Resp(fake_bytes)):
+            path = services.cache_media(pm)
+
+        self.assertTrue(path.endswith(".mp4"))
+        pm.refresh_from_db()
+        self.assertEqual(pm.type, "video")
+        self.assertEqual(pm.reference_data.get("detected_type"), "video")

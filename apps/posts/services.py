@@ -453,6 +453,54 @@ def _guess_extension(media_type: str, content_type: str | None = None) -> str:
     return ".bin"
 
 
+def _detect_media_type(ext: str, content_type: str | None = None) -> str | None:
+    ext = (ext or "").lower()
+    mime = (content_type or "").split(";")[0].strip().lower()
+
+    doc_mime_prefixes = {
+        "application/pdf",
+        "application/zip",
+        "application/x-zip-compressed",
+        "application/x-rar-compressed",
+        "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        "application/vnd.ms-powerpoint",
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "application/msword",
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        "application/vnd.ms-excel",
+    }
+
+    if mime == "image/gif":
+        return "doc"
+    if mime.startswith("image/"):
+        return "photo"
+    if mime.startswith("video/"):
+        return "video"
+    if mime in doc_mime_prefixes:
+        return "doc"
+
+    if ext in {".gif"}:
+        return "doc"
+    if ext in {".jpg", ".jpeg", ".png", ".webp", ".bmp"}:
+        return "photo"
+    if ext in {".mp4", ".mov", ".webm", ".mkv", ".avi", ".m4v"}:
+        return "video"
+    if ext in {
+        ".pdf",
+        ".zip",
+        ".rar",
+        ".7z",
+        ".doc",
+        ".docx",
+        ".ppt",
+        ".pptx",
+        ".xls",
+        ".xlsx",
+    }:
+        return "doc"
+    return None
+
+
 def _persist_resolved_media(
     *,
     content: bytes,
@@ -1156,6 +1204,9 @@ def cache_media(pm: PostMedia):
     path = parsed.path or ""
     ext = os.path.splitext(path)[-1].lower()
     content: bytes | None = None
+    detected_type: str | None = None
+    content_type: str | None = None
+    original_type = pm.type
 
     if parsed.scheme in ("http", "https"):
         timeout_s = float(os.getenv("MEDIA_DOWNLOAD_TIMEOUT", 30))
@@ -1184,14 +1235,14 @@ def cache_media(pm: PostMedia):
             logger.warning("Pusty plik zwrócony z %s dla media %s", url, pm.id)
             return pm.cache_path or ""
 
+        content_type = response.headers.get("content-type") or ""
         if not ext:
-            content_type = (response.headers.get("content-type") or "").split(";")[0].strip()
-            if content_type:
-                guessed = mimetypes.guess_extension(content_type)
-                if guessed:
-                    ext = guessed
+            guessed = mimetypes.guess_extension(content_type.split(";")[0].strip())
+            if guessed:
+                ext = guessed
         if not ext:
             ext = ".bin"
+        detected_type = _detect_media_type(ext, content_type)
     else:
         if parsed.scheme == "file":
             src = unquote(path)
@@ -1211,6 +1262,9 @@ def cache_media(pm: PostMedia):
             return pm.cache_path or ""
         if not ext:
             ext = os.path.splitext(src)[-1] or ".bin"
+        if not content_type:
+            content_type = mimetypes.guess_type(src)[0]
+        detected_type = detected_type or _detect_media_type(ext, content_type)
 
     fname = cache_dir / f"{pm.id}{ext}"
     try:
@@ -1222,5 +1276,19 @@ def cache_media(pm: PostMedia):
 
     pm.cache_path = fname.as_posix()
     pm.expires_at = timezone.now() + timedelta(days=int(os.getenv("MEDIA_CACHE_TTL_DAYS", 7)))
-    pm.save()
+    update_fields = ["cache_path", "expires_at"]
+
+    detected_type = detected_type or _detect_media_type(ext, content_type)
+    if detected_type and detected_type != original_type:
+        pm.type = detected_type
+        if "type" not in update_fields:
+            update_fields.append("type")
+        ref_data = dict(pm.reference_data or {})
+        if ref_data.get("detected_type") != detected_type:
+            ref_data["detected_type"] = detected_type
+            pm.reference_data = ref_data
+            if "reference_data" not in update_fields:
+                update_fields.append("reference_data")
+
+    pm.save(update_fields=update_fields)
     return pm.cache_path
