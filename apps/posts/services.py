@@ -25,6 +25,10 @@ from .models import Channel, Post, PostMedia
 from dateutil import tz
 from typing import Any
 
+IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".avif", ".heic", ".heif"}
+VIDEO_EXTENSIONS = {".mp4", ".mov", ".m4v", ".avi", ".mkv", ".webm", ".mpg", ".mpeg", ".3gp"}
+DOC_EXTENSIONS = {".pdf", ".zip", ".rar", ".7z", ".doc", ".docx", ".ppt", ".pptx", ".xls", ".xlsx"}
+
 
 logger = logging.getLogger(__name__)
 
@@ -89,6 +93,22 @@ def _default_image_prompt(post_text: str) -> str:
         "Fotorealistyczne zdjęcie ilustrujące temat wpisu: "
         f"{snippet}. Reporterskie ujęcie, realistyczne kolory, brak napisów."
     )
+
+
+def _guess_media_type_from_url(url: str, fallback: str) -> str:
+    try:
+        parsed = urlparse(url)
+        path = parsed.path or ""
+        ext = Path(path).suffix.lower()
+    except Exception:
+        ext = ""
+    if ext in IMAGE_EXTENSIONS:
+        return "photo"
+    if ext in VIDEO_EXTENSIONS:
+        return "video"
+    if ext in DOC_EXTENSIONS:
+        return "doc"
+    return fallback
 
 
 def _normalise_media_payload(media: Any, fallback_prompt: str) -> list[dict[str, Any]]:
@@ -311,6 +331,7 @@ def attach_media_from_payload(post: Post, media_payload: list[dict[str, Any]]):
         if not url:
             logger.info("Pomijam media typu %s bez url dla posta %s", media_type, post.id)
             continue
+        media_type = _guess_media_type_from_url(url, media_type)
         has_spoiler = item.get("has_spoiler")
         if has_spoiler is None and media_type == "photo":
             has_spoiler = bool(getattr(post.channel, "auto_blur_default", False))
