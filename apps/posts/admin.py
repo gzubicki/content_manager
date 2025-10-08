@@ -832,7 +832,6 @@ class PostMediaAdmin(admin.ModelAdmin):
     def get_queryset(self, request):
         qs = super().get_queryset(request)
         self._related_posts_cache: dict[str, list[Post]] = {}
-        self._post_admin_url_cache: dict[int, str | None] = {}
         return qs.select_related("post", "post__channel")
 
     @admin.display(description="Wpis", ordering="post__id")
@@ -843,11 +842,11 @@ class PostMediaAdmin(admin.ModelAdmin):
             return "—"
         channel = getattr(post, "channel", None)
         channel_name = getattr(channel, "name", "?")
-        url = self._resolve_post_change_url(post)
-        label = f"#{post_id} – {channel_name}"
-        if not url:
-            return format_html("{}", label)
-        return format_html("<a href='{}'>{}</a>", url, label)
+        url = reverse(
+            f"admin:{Post._meta.app_label}_{Post._meta.model_name}_change",
+            args=[post_id],
+        )
+        return format_html("<a href='{}'>#{} – {}</a>", url, post_id, channel_name)
 
     @admin.display(description="Podgląd")
     def preview(self, obj: PostMedia) -> str:
@@ -888,16 +887,21 @@ class PostMediaAdmin(admin.ModelAdmin):
         posts = self._get_related_posts(obj)
         if not posts:
             return "—"
-        items: list[tuple[str]] = []
-        for post in posts:
-            channel_name = getattr(post.channel, "name", "?")
-            label = f"#{post.id} – {channel_name}"
-            url = self._resolve_post_change_url(post)
-            if url:
-                items.append((format_html("<a href='{}'>{}</a>", url, label),))
-            else:
-                items.append((format_html("{}", label),))
-        return format_html_join("<br>", "{}", items)
+        return format_html_join(
+            "<br>",
+            "<a href='{}'>#{} – {}</a>",
+            (
+                (
+                    reverse(
+                        f"admin:{Post._meta.app_label}_{Post._meta.model_name}_change",
+                        args=[post.id],
+                    ),
+                    post.id,
+                    getattr(post.channel, "name", "?"),
+                )
+                for post in posts
+            ),
+        )
 
     def _get_related_posts(self, obj: PostMedia) -> list[Post]:
         source_url = (obj.source_url or "").strip()
@@ -913,35 +917,3 @@ class PostMediaAdmin(admin.ModelAdmin):
         )
         self._related_posts_cache[source_url] = posts
         return [post for post in posts if post.id != obj.post_id]
-
-    def _resolve_post_change_url(self, post: Post) -> str | None:
-        if not post or not post.pk:
-            return None
-        cache = getattr(self, "_post_admin_url_cache", None)
-        if cache is not None and post.pk in cache:
-            return cache[post.pk]
-
-        candidates: list[type[Post]] = []
-
-        def add_candidate(model: type[Post]) -> None:
-            if model in admin.site._registry and model not in candidates:
-                candidates.append(model)
-
-        if post.status == Post.Status.DRAFT:
-            add_candidate(DraftPost)
-        add_candidate(ScheduledPost)
-        add_candidate(DraftPost)
-        add_candidate(Post)
-
-        url: str | None = None
-        for model in candidates:
-            try:
-                url = reverse(admin_urlname(model._meta, "change"), args=[post.pk])
-            except NoReverseMatch:
-                continue
-            else:
-                break
-
-        if cache is not None:
-            cache[post.pk] = url
-        return url
