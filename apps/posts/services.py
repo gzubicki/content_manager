@@ -267,12 +267,24 @@ def _build_user_prompt(
         "Zwróć dokładnie jeden obiekt JSON zawierający pola:",
         "- post: obiekt z polem text zawierającym gotową treść posta zgodną z zasadami kanału;",
         "- media: lista 0-5 obiektów opisujących multimedia do posta.",
-        "Każdy obiekt media MUSI mieć pola: type (photo/video/doc), resolver (np. twitter/telegram/instagram/rss) oraz reference – obiekt z prawdziwymi identyfikatorami źródła (np. {\"tg_post_url\": \"https://t.me/...\", \"posted_at\": \"2024-06-09T10:32:00Z\"}).",
+        (
+            "Każdy obiekt media MUSI mieć pola: type (photo/video/doc), resolver "
+            "(np. twitter/telegram/instagram/rss) oraz reference – obiekt z prawdziwymi"
+            " identyfikatorami źródła (np. {\"tg_post_url\": \"https://t.me/...\","
+            " \"posted_at\": \"2024-06-09T10:32:00Z\"})."
+        ),
         "Pole identyfikator (jeśli użyte) ma zawierać rzeczywistą wartość identyfikatora, a nie nazwę pola ani placeholder.",
-        "Jeśli brak klucza specyficznego dla platformy, użyj reference.source_locator z kanonicznym adresem URL do zasobu.",
+        (
+            "Jeżeli brak dedykowanych kluczy platformy, ustaw reference.source_locator na"
+            " kanoniczny adres strony źródłowej (np. permalink posta lub artykułu),"
+            " zamiast podawać bezpośredni link do pliku multimedialnego."
+        ),
+        "Nie dodawaj tekstu poza opisanym obiektem JSON.",
         "Używaj wyłącznie angielskich nazw pól w formacie snake_case (ASCII, bez spacji i znaków diakrytycznych).",
-        "Nie podawaj bezpośrednich linków do plików – zwróć wyłącznie identyfikatory potrzebne do pobrania media po naszej stronie.",
-        "Jeśli media pochodzą z artykułu lub innego źródła, dołącz dostępne metadane (caption, posted_at, author).",
+        (
+            "Jeśli media pochodzą z artykułu lub innego źródła, dołącz dostępne metadane"
+            " (caption, posted_at, author)."
+        ),
         "Pole has_spoiler (true/false) jest opcjonalne i dotyczy wyłącznie zdjęć wymagających ukrycia.",
     ]
 
