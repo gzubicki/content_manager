@@ -4,7 +4,7 @@ from unittest.mock import patch
 from django.test import TestCase
 
 from apps.posts import services
-from apps.posts.models import Channel
+from apps.posts.models import Channel, Post
 
 
 class ChannelPromptPropagationTest(TestCase):
@@ -61,3 +61,28 @@ class ChannelPromptPropagationTest(TestCase):
         self.assertNotIn("linia1", user_prompt)
         self.assertNotIn("linia2", user_prompt)
         self.assertNotIn("Nie dodawaj linków", user_prompt)
+
+    def test_duplicate_detection_triggers_retry_with_additional_context(self):
+        Post.objects.create(
+            channel=self.channel,
+            text="Powtarzalny wpis o dronach",
+            status=Post.Status.PUBLISHED,
+        )
+
+        responses = [
+            json.dumps({"post": {"text": "Powtarzalny wpis o dronach"}, "media": []}),
+            json.dumps({"post": {"text": "Nowy raport o sytuacji"}, "media": []}),
+        ]
+
+        def _side_effect(*args, **kwargs):
+            return responses.pop(0)
+
+        with patch("apps.posts.services.gpt_generate_text", side_effect=_side_effect) as mock_gpt:
+            payload = services.gpt_generate_post_payload(self.channel)
+
+        self.assertEqual(payload["post"]["text"], "Nowy raport o sytuacji")
+        self.assertEqual(mock_gpt.call_count, 2)
+
+        second_user_prompt = mock_gpt.call_args_list[1][0][1]
+        self.assertIn("Unikaj powtarzania poniższych tekstów", second_user_prompt)
+        self.assertIn("Powtarzalny wpis o dronach", second_user_prompt)

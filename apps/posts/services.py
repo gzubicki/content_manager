@@ -25,7 +25,7 @@ from telegram import Bot
 from rapidfuzz import fuzz
 from .models import Channel, Post, PostMedia
 from dateutil import tz
-from typing import Any, Optional
+from typing import Any, Iterable, Optional
 
 
 logger = logging.getLogger(__name__)
@@ -198,6 +198,99 @@ def _article_context(article: dict[str, Any] | None) -> str:
         if value:
             legacy_bits.append(f"{label}: {value}")
     return "\n".join(legacy_bits)
+
+
+def _shorten_for_prompt(value: str, *, width: int = 200) -> str:
+    collapsed = " ".join((value or "").split())
+    if not collapsed:
+        return ""
+    return textwrap.shorten(collapsed, width=width, placeholder="…")
+
+
+def _recent_post_texts(channel: Channel, *, limit: int = 40) -> list[str]:
+    statuses = [
+        Post.Status.DRAFT,
+        Post.Status.APPROVED,
+        Post.Status.SCHEDULED,
+        Post.Status.PUBLISHED,
+    ]
+    queryset = (
+        channel.posts.filter(status__in=statuses)
+        .order_by("-id")
+        .values_list("text", flat=True)[:limit]
+    )
+    return [" ".join((text or "").split()) for text in queryset if text]
+
+
+def _score_similar_texts(candidate: str, existing: Iterable[str]) -> list[tuple[float, str]]:
+    candidate_clean = " ".join((candidate or "").split())
+    if not candidate_clean:
+        return []
+    scored: list[tuple[float, str]] = []
+    for original in existing:
+        if not original:
+            continue
+        score = fuzz.token_set_ratio(candidate_clean, original) / 100.0
+        scored.append((score, original))
+    scored.sort(key=lambda item: item[0], reverse=True)
+    return scored
+
+
+def _merge_avoid_texts(existing: list[str], new_items: Iterable[str], *, limit: int = 5) -> list[str]:
+    seen: set[str] = set()
+    merged: list[str] = []
+    for source in list(existing) + list(new_items):
+        cleaned = " ".join((source or "").split())
+        if not cleaned:
+            continue
+        if cleaned in seen:
+            continue
+        seen.add(cleaned)
+        merged.append(source)
+        if len(merged) >= limit:
+            break
+    return merged
+
+
+def _build_user_prompt(
+    channel: Channel,
+    article: dict[str, Any] | None,
+    avoid_texts: list[str] | None = None,
+) -> str:
+    instructions = [
+        "Zwróć dokładnie jeden obiekt JSON zawierający pola:",
+        "- post: obiekt z polem text zawierającym gotową treść posta zgodną z zasadami kanału;",
+        "- media: lista 0-5 obiektów opisujących multimedia do posta.",
+        "Każdy obiekt media MUSI mieć pola: type (photo/video/doc), resolver (np. twitter/telegram/instagram/rss) oraz reference – obiekt z prawdziwymi identyfikatorami źródła (np. {\"tg_post_url\": \"https://t.me/...\", \"posted_at\": \"2024-06-09T10:32:00Z\"}).",
+        "Pole identyfikator (jeśli użyte) ma zawierać rzeczywistą wartość identyfikatora, a nie nazwę pola ani placeholder.",
+        "Jeśli brak klucza specyficznego dla platformy, użyj reference.source_locator z kanonicznym adresem URL do zasobu.",
+        "Używaj wyłącznie angielskich nazw pól w formacie snake_case (ASCII, bez spacji i znaków diakrytycznych).",
+        "Nie podawaj bezpośrednich linków do plików – zwróć wyłącznie identyfikatory potrzebne do pobrania media po naszej stronie.",
+        "Jeśli media pochodzą z artykułu lub innego źródła, dołącz dostępne metadane (caption, posted_at, author).",
+        "Pole has_spoiler (true/false) jest opcjonalne i dotyczy wyłącznie zdjęć wymagających ukrycia.",
+    ]
+
+    if channel.max_chars:
+        instructions.append(
+            "Długość odpowiedzi musi mieścić się w limicie znaków opisanym w systemowym promptcie."
+        )
+
+    article_context = _article_context(article)
+    if article_context:
+        instructions.append("Korzystaj z poniższych danych artykułu:")
+        instructions.append(article_context)
+
+    avoid = avoid_texts or []
+    if avoid:
+        instructions.append(
+            "Unikaj powtarzania poniższych tekstów (to niedawne wpisy kanału lub poprzednie szkice, zmień fakty i sformułowania):"
+        )
+        for idx, text in enumerate(avoid, 1):
+            snippet = _shorten_for_prompt(text, width=220)
+            if snippet:
+                instructions.append(f"{idx}. {snippet}")
+
+    return "\n".join(instructions)
 
 
 def _strip_code_fence(raw: str) -> str:
@@ -894,53 +987,64 @@ def gpt_new_draft(channel: Channel) -> dict[str, Any] | None:
 
 def gpt_generate_post_payload(channel: Channel, article: dict[str, Any] | None = None) -> dict[str, Any] | None:
     sys = _channel_system_prompt(channel)
+    recent_texts = _recent_post_texts(channel)
+    avoid_texts: list[str] = []
+    max_attempts = max(int(os.getenv("GPT_DUPLICATE_MAX_ATTEMPTS", 3)), 1)
+    similarity_threshold = float(os.getenv("GPT_DUPLICATE_THRESHOLD", 0.9))
 
-    instructions = [
-        "Zwróć dokładnie jeden obiekt JSON zawierający pola:",
-        "- post: obiekt z polem text zawierającym gotową treść posta zgodną z zasadami kanału;",
-        "- media: lista 0-5 obiektów opisujących multimedia do posta.",
-        "Każdy obiekt media MUSI mieć pola: type (photo/video/doc), resolver (np. twitter/telegram/instagram/rss) oraz reference – obiekt z prawdziwymi identyfikatorami źródła (np. {\"tg_post_url\": \"https://t.me/...\", \"posted_at\": \"2024-06-09T10:32:00Z\"}).",
-        "Pole identyfikator (jeśli użyte) ma zawierać rzeczywistą wartość identyfikatora, a nie nazwę pola ani placeholder.",
-        "Jeśli brak klucza specyficznego dla platformy, użyj reference.source_locator z kanonicznym adresem URL do zasobu.",
-        "Używaj wyłącznie angielskich nazw pól w formacie snake_case (ASCII, bez spacji i znaków diakrytycznych).",
-        "Nie podawaj bezpośrednich linków do plików – zwróć wyłącznie identyfikatory potrzebne do pobrania media po naszej stronie.",
-        "Jeśli media pochodzą z artykułu lub innego źródła, dołącz dostępne metadane (caption, posted_at, author).",
-        "Pole has_spoiler (true/false) jest opcjonalne i dotyczy wyłącznie zdjęć wymagających ukrycia.",
-    ]
-
-    if channel.max_chars:
-        instructions.append(
-            "Długość odpowiedzi musi mieścić się w limicie znaków opisanym w systemowym promptcie."
+    for attempt in range(1, max_attempts + 1):
+        usr = _build_user_prompt(channel, article, avoid_texts)
+        logger.info(
+            "GPT draft request (channel=%s attempt=%s)\nSYSTEM:\n%s\nUSER:\n%s",
+            channel.id,
+            attempt,
+            sys,
+            usr,
+        )
+        raw = gpt_generate_text(
+            sys,
+            usr,
+            response_format={"type": "json_object"},
+        )
+        if raw is None:
+            return None
+        payload = _parse_gpt_payload(raw)
+        if payload is None:
+            logger.warning(
+                "GPT draft response (channel=%s attempt=%s) nie zawiera poprawnego JSON",
+                channel.id,
+                attempt,
+            )
+            return None
+        logger.info(
+            "GPT draft response (channel=%s attempt=%s): %s",
+            channel.id,
+            attempt,
+            json.dumps(payload, ensure_ascii=False),
         )
 
-    article_context = _article_context(article)
-    if article_context:
-        instructions.append("Korzystaj z poniższych danych artykułu:")
-        instructions.append(article_context)
+        text = ""
+        post_data = payload.get("post")
+        if isinstance(post_data, dict):
+            text = str(post_data.get("text") or "").strip()
+        if not text:
+            return payload
 
-    usr = "\n".join(instructions)
-    logger.info(
-        "GPT draft request (channel=%s)\nSYSTEM:\n%s\nUSER:\n%s",
-        channel.id,
-        sys,
-        usr,
-    )
-    raw = gpt_generate_text(
-        sys,
-        usr,
-        response_format={"type": "json_object"},
-    )
-    if raw is None:
-        return None
-    payload = _parse_gpt_payload(raw)
-    if payload is None:
-        logger.warning("GPT draft response (channel=%s) nie zawiera poprawnego JSON", channel.id)
-        return None
-    logger.info(
-        "GPT draft response (channel=%s): %s",
-        channel.id,
-        json.dumps(payload, ensure_ascii=False),
-    )
+        scores = _score_similar_texts(text, recent_texts)
+        best_score = scores[0][0] if scores else 0.0
+        if best_score < similarity_threshold or attempt >= max_attempts:
+            return payload
+
+        duplicates = [original for score, original in scores if score >= similarity_threshold]
+        logger.info(
+            "GPT draft detected high similarity %.3f with %s entries for channel %s",
+            best_score,
+            len(duplicates),
+            channel.id,
+        )
+        avoid_candidates = duplicates[:3] + [text]
+        avoid_texts = _merge_avoid_texts(avoid_texts, avoid_candidates)
+
     return payload
 
 def gpt_rewrite_text(channel: Channel, text: str, editor_prompt: str) -> str:
