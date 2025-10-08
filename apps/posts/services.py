@@ -25,7 +25,7 @@ from telegram import Bot
 from rapidfuzz import fuzz
 from .models import Channel, Post, PostMedia
 from dateutil import tz
-from typing import Any, Iterable, Optional
+from typing import Any, Dict, List, Optional
 
 
 logger = logging.getLogger(__name__)
@@ -222,7 +222,13 @@ def _recent_post_texts(channel: Channel, *, limit: int = 40) -> list[str]:
     return [" ".join((text or "").split()) for text in queryset if text]
 
 
-def _score_similar_texts(candidate: str, existing: Iterable[str]) -> list[tuple[float, str]]:
+def _score_similar_texts(candidate: str, existing: 
+                         
+                         
+                         
+                         
+                         
+                         [str]) -> list[tuple[float, str]]:
     candidate_clean = " ".join((candidate or "").split())
     if not candidate_clean:
         return []
@@ -683,6 +689,14 @@ def _resolve_media_reference(
             )
             return fallback_url
         if fallback_url:
+            if resolver == "telegram" and fallback_url.startswith(("https://t.me/", "http://t.me/")):
+                logger.info(
+                    "Brak MEDIA_RESOLVER_URL – używam adresu Telegram %s (resolver=%s, ref=%s)",
+                    fallback_url,
+                    resolver,
+                    reference,
+                )
+                return fallback_url
             logger.warning(
                 "Pominięto fallback URL %s – wygląda na stronę HTML. Skonfiguruj TELEGRAM_RESOLVER_* lub MEDIA_RESOLVER_URL",
                 fallback_url,
@@ -1062,10 +1076,97 @@ def _media_expiry_deadline():
     return timezone.now() + timedelta(days=int(os.getenv("MEDIA_CACHE_TTL_DAYS", 7)))
 
 
+def _attach_additional_telegram_album_media(
+    *,
+    post: Post,
+    resolver: str,
+    base_reference: dict[str, Any],
+    media_type: str,
+    caption: str,
+    posted_at: str,
+    has_spoiler: bool,
+    next_order: int,
+    extras: List[Dict[str, str]],
+) -> tuple[int, list[dict[str, Any]]]:
+    snapshots: list[dict[str, Any]] = []
+    for extra in extras:
+        extra_url = str(extra.get("uri") or extra.get("url") or "").strip()
+        if not extra_url:
+            continue
+        extra_type = str(extra.get("type") or media_type or "").strip().lower() or media_type or "photo"
+        extra_reference = dict(base_reference)
+        extra_reference.pop("cache_path", None)
+        extra_reference["resolved_url"] = extra_url
+        extra_reference["auto_album"] = True
+        extra_snapshot: dict[str, Any] = {
+            "type": extra_type,
+            "resolver": resolver,
+            "caption": caption,
+            "posted_at": posted_at,
+            "source": extra_url,
+            "reference": dict(extra_reference),
+            "status": "pending",
+            "auto_album": True,
+        }
+        pm_extra = PostMedia.objects.create(
+            post=post,
+            type=extra_type,
+            source_url=extra_url,
+            resolver=resolver,
+            reference_data=extra_reference,
+            order=next_order,
+            has_spoiler=has_spoiler,
+        )
+        next_order += 1
+        try:
+            cache_path = cache_media(pm_extra)
+        except Exception:
+            logger.exception(
+                "Nie udało się pobrać dodatkowego medium Telegram %s (post %s)",
+                extra_url,
+                post.id,
+            )
+            pm_extra.delete()
+            extra_snapshot["status"] = "error"
+            extra_snapshot["error"] = "cache_failure"
+            snapshots.append(extra_snapshot)
+            continue
+        if not cache_path:
+            logger.info(
+                "Pomijam dodatkowe medium %s dla posta %s – brak cache po pobraniu (%s)",
+                pm_extra.id,
+                post.id,
+                extra_url,
+            )
+            pm_extra.delete()
+            extra_snapshot["status"] = "skipped"
+            extra_snapshot["error"] = "empty_cache"
+            snapshots.append(extra_snapshot)
+            continue
+        extra_reference["cache_path"] = cache_path
+        extra_snapshot["status"] = "cached"
+        extra_snapshot["reference"] = dict(extra_reference)
+        snapshots.append(extra_snapshot)
+    return next_order, snapshots
+
+
 def attach_media_from_payload(post: Post, media_payload: list[dict[str, Any]]):
     post.media.all().delete()
+    telegram_counts: dict[str, int] = {}
+    for item in media_payload:
+        if not isinstance(item, dict):
+            continue
+        reference = item.get("reference")
+        if not isinstance(reference, dict):
+            continue
+        tg_url = str(reference.get("tg_post_url") or "").strip()
+        if tg_url:
+            telegram_counts[tg_url] = telegram_counts.get(tg_url, 0) + 1
+
+    processed_albums: set[str] = set()
     source_entries: list[dict[str, Any]] = []
-    for idx, item in enumerate(media_payload):
+    next_order = 0
+    for item in media_payload:
         if not isinstance(item, dict):
             continue
         media_type = str(item.get("type", "photo") or "photo").strip().lower()
@@ -1153,9 +1254,10 @@ def attach_media_from_payload(post: Post, media_payload: list[dict[str, Any]]):
             source_url=source_url,
             resolver=resolver_name,
             reference_data=reference_data,
-            order=idx,
+            order=next_order,
             has_spoiler=has_spoiler,
         )
+        next_order += 1
         try:
             cache_path = cache_media(pm)
         except Exception:
@@ -1165,6 +1267,7 @@ def attach_media_from_payload(post: Post, media_payload: list[dict[str, Any]]):
             source_entry["error"] = "cache_failure"
             source_entries.append(source_entry)
             continue
+        extra_snapshots: list[dict[str, Any]] = []
         if not cache_path:
             logger.info(
                 "Pomijam medium %s dla posta %s – brak cache po pobraniu (%s)",
@@ -1186,7 +1289,31 @@ def attach_media_from_payload(post: Post, media_payload: list[dict[str, Any]]):
             source_entry["status"] = "cached"
             source_entry["reference"] = reference_data
             source_entry["source"] = source_url
+            if resolver_name == "telegram":
+                tg_url = str(reference_data.get("tg_post_url") or "").strip()
+                if tg_url and telegram_counts.get(tg_url, 0) == 1 and tg_url not in processed_albums:
+                    processed_albums.add(tg_url)
+                    try:
+                        from apps.posts.resolvers import telegram as telegram_resolver
+                    except ImportError:
+                        telegram_resolver = None  # pragma: no cover - import failure
+                    if telegram_resolver is not None:
+                        extras = telegram_resolver.consume_cached_album(tg_url)
+                        if extras:
+                            next_order, extra_snapshots = _attach_additional_telegram_album_media(
+                                post=post,
+                                resolver=resolver_name,
+                                base_reference=reference_data,
+                                media_type=media_type,
+                                caption=caption,
+                                posted_at=posted_at,
+                                has_spoiler=has_spoiler,
+                                next_order=next_order,
+                                extras=extras,
+                            )
         source_entries.append(source_entry)
+        if extra_snapshots:
+            source_entries.extend(extra_snapshots)
 
     post.source_metadata = {"media": source_entries}
     post.save(update_fields=["source_metadata"])
