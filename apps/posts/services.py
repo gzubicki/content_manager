@@ -25,7 +25,7 @@ from telegram import Bot
 from rapidfuzz import fuzz
 from .models import Channel, Post, PostMedia
 from dateutil import tz
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Iterable
 
 
 logger = logging.getLogger(__name__)
