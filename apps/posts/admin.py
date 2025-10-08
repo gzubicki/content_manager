@@ -20,7 +20,8 @@ from django.template.response import TemplateResponse
 from django.urls import path, reverse
 from django.utils import timezone
 from django.utils.formats import date_format
-from django.utils.html import format_html
+from django.utils.html import format_html, format_html_join
+from django.utils.text import Truncator
 from django.utils.translation import gettext, ngettext
 
 from . import services
@@ -811,4 +812,106 @@ class ScheduledPostAdmin(BasePostAdmin):
 
 @admin.register(PostMedia)
 class PostMediaAdmin(admin.ModelAdmin):
-    list_display = ("id","post","type","order","has_spoiler","cache_path","tg_file_id")
+    list_display = (
+        "id",
+        "preview",
+        "post_with_channel",
+        "type",
+        "source_link",
+        "related_posts",
+        "order",
+        "has_spoiler",
+        "created_at",
+        "tg_file_id",
+    )
+    list_select_related = ("post", "post__channel")
+    ordering = ("-created_at", "-id")
+
+    def get_queryset(self, request):
+        qs = super().get_queryset(request)
+        self._related_posts_cache: dict[str, list[Post]] = {}
+        return qs.select_related("post", "post__channel")
+
+    @admin.display(description="Wpis", ordering="post__id")
+    def post_with_channel(self, obj: PostMedia) -> str:
+        post = obj.post
+        post_id = getattr(post, "id", None)
+        if not post_id:
+            return "—"
+        channel = getattr(post, "channel", None)
+        channel_name = getattr(channel, "name", "?")
+        url = reverse(
+            f"admin:{Post._meta.app_label}_{Post._meta.model_name}_change",
+            args=[post_id],
+        )
+        return format_html("<a href='{}'>#{} – {}</a>", url, post_id, channel_name)
+
+    @admin.display(description="Podgląd")
+    def preview(self, obj: PostMedia) -> str:
+        url = media_public_url(obj)
+        if not url:
+            return "—"
+        if obj.type == "photo":
+            return format_html(
+                "<img src='{}' alt='' style='max-height:80px;max-width:120px;"
+                "object-fit:cover;border-radius:4px;' />",
+                url,
+            )
+        if obj.type == "video":
+            return format_html(
+                "<video src='{}' controls style='max-height:80px;max-width:120px;'>"
+                "Twoja przeglądarka nie obsługuje podglądu wideo.</video>",
+                url,
+            )
+        return format_html(
+            "<a href='{}' target='_blank' rel='noopener'>Pobierz</a>",
+            url,
+        )
+
+    @admin.display(description="Źródłowy URL", ordering="source_url")
+    def source_link(self, obj: PostMedia) -> str:
+        url = (obj.source_url or "").strip()
+        if not url:
+            return "—"
+        label = Truncator(url).chars(60)
+        return format_html(
+            "<a href='{}' target='_blank' rel='noopener'>{}</a>",
+            url,
+            label,
+        )
+
+    @admin.display(description="Powiązane posty")
+    def related_posts(self, obj: PostMedia) -> str:
+        posts = self._get_related_posts(obj)
+        if not posts:
+            return "—"
+        return format_html_join(
+            "<br>",
+            "<a href='{}'>#{} – {}</a>",
+            (
+                (
+                    reverse(
+                        f"admin:{Post._meta.app_label}_{Post._meta.model_name}_change",
+                        args=[post.id],
+                    ),
+                    post.id,
+                    getattr(post.channel, "name", "?"),
+                )
+                for post in posts
+            ),
+        )
+
+    def _get_related_posts(self, obj: PostMedia) -> list[Post]:
+        source_url = (obj.source_url or "").strip()
+        if not source_url:
+            return []
+        cached = self._related_posts_cache.get(source_url)
+        if cached is not None:
+            return [post for post in cached if post.id != obj.post_id]
+        posts = list(
+            Post.objects.filter(media__source_url=source_url)
+            .select_related("channel")
+            .distinct()
+        )
+        self._related_posts_cache[source_url] = posts
+        return [post for post in posts if post.id != obj.post_id]
