@@ -200,6 +200,105 @@ def _article_context(article: dict[str, Any] | None) -> str:
     return "\n".join(legacy_bits)
 
 
+def _shorten_for_prompt(value: str, *, width: int = 200) -> str:
+    collapsed = " ".join((value or "").split())
+    if not collapsed:
+        return ""
+    return textwrap.shorten(collapsed, width=width, placeholder="…")
+
+
+def _recent_post_texts(channel: Channel, *, limit: int = 40) -> list[str]:
+    statuses = [
+        Post.Status.DRAFT,
+        Post.Status.APPROVED,
+        Post.Status.SCHEDULED,
+        Post.Status.PUBLISHED,
+    ]
+    queryset = (
+        channel.posts.filter(status__in=statuses)
+        .order_by("-id")
+        .values_list("text", flat=True)[:limit]
+    )
+    return [" ".join((text or "").split()) for text in queryset if text]
+
+
+def _score_similar_texts(candidate: str, existing: 
+                         
+                         
+                         
+                         
+                         
+                         [str]) -> list[tuple[float, str]]:
+    candidate_clean = " ".join((candidate or "").split())
+    if not candidate_clean:
+        return []
+    scored: list[tuple[float, str]] = []
+    for original in existing:
+        if not original:
+            continue
+        score = fuzz.token_set_ratio(candidate_clean, original) / 100.0
+        scored.append((score, original))
+    scored.sort(key=lambda item: item[0], reverse=True)
+    return scored
+
+
+def _merge_avoid_texts(existing: list[str], new_items: Iterable[str], *, limit: int = 5) -> list[str]:
+    seen: set[str] = set()
+    merged: list[str] = []
+    for source in list(existing) + list(new_items):
+        cleaned = " ".join((source or "").split())
+        if not cleaned:
+            continue
+        if cleaned in seen:
+            continue
+        seen.add(cleaned)
+        merged.append(source)
+        if len(merged) >= limit:
+            break
+    return merged
+
+
+def _build_user_prompt(
+    channel: Channel,
+    article: dict[str, Any] | None,
+    avoid_texts: list[str] | None = None,
+) -> str:
+    instructions = [
+        "Zwróć dokładnie jeden obiekt JSON zawierający pola:",
+        "- post: obiekt z polem text zawierającym gotową treść posta zgodną z zasadami kanału;",
+        "- media: lista 0-5 obiektów opisujących multimedia do posta.",
+        "Każdy obiekt media MUSI mieć pola: type (photo/video/doc), resolver (np. twitter/telegram/instagram/rss) oraz reference – obiekt z prawdziwymi identyfikatorami źródła (np. {\"tg_post_url\": \"https://t.me/...\", \"posted_at\": \"2024-06-09T10:32:00Z\"}).",
+        "Pole identyfikator (jeśli użyte) ma zawierać rzeczywistą wartość identyfikatora, a nie nazwę pola ani placeholder.",
+        "Jeśli brak klucza specyficznego dla platformy, użyj reference.source_locator z kanonicznym adresem URL do zasobu.",
+        "Używaj wyłącznie angielskich nazw pól w formacie snake_case (ASCII, bez spacji i znaków diakrytycznych).",
+        "Nie podawaj bezpośrednich linków do plików – zwróć wyłącznie identyfikatory potrzebne do pobrania media po naszej stronie.",
+        "Jeśli media pochodzą z artykułu lub innego źródła, dołącz dostępne metadane (caption, posted_at, author).",
+        "Pole has_spoiler (true/false) jest opcjonalne i dotyczy wyłącznie zdjęć wymagających ukrycia.",
+    ]
+
+    if channel.max_chars:
+        instructions.append(
+            "Długość odpowiedzi musi mieścić się w limicie znaków opisanym w systemowym promptcie."
+        )
+
+    article_context = _article_context(article)
+    if article_context:
+        instructions.append("Korzystaj z poniższych danych artykułu:")
+        instructions.append(article_context)
+
+    avoid = avoid_texts or []
+    if avoid:
+        instructions.append(
+            "Unikaj powtarzania poniższych tekstów (to niedawne wpisy kanału lub poprzednie szkice, zmień fakty i sformułowania):"
+        )
+        for idx, text in enumerate(avoid, 1):
+            snippet = _shorten_for_prompt(text, width=220)
+            if snippet:
+                instructions.append(f"{idx}. {snippet}")
+
+    return "\n".join(instructions)
+
+
 def _strip_code_fence(raw: str) -> str:
     cleaned = raw.strip()
     if cleaned.startswith("```"):
@@ -451,6 +550,54 @@ def _guess_extension(media_type: str, content_type: str | None = None) -> str:
     if media_type == "doc":
         return ".bin"
     return ".bin"
+
+
+def _detect_media_type(ext: str, content_type: str | None = None) -> str | None:
+    ext = (ext or "").lower()
+    mime = (content_type or "").split(";")[0].strip().lower()
+
+    doc_mime_prefixes = {
+        "application/pdf",
+        "application/zip",
+        "application/x-zip-compressed",
+        "application/x-rar-compressed",
+        "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        "application/vnd.ms-powerpoint",
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "application/msword",
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        "application/vnd.ms-excel",
+    }
+
+    if mime == "image/gif":
+        return "doc"
+    if mime.startswith("image/"):
+        return "photo"
+    if mime.startswith("video/"):
+        return "video"
+    if mime in doc_mime_prefixes:
+        return "doc"
+
+    if ext in {".gif"}:
+        return "doc"
+    if ext in {".jpg", ".jpeg", ".png", ".webp", ".bmp"}:
+        return "photo"
+    if ext in {".mp4", ".mov", ".webm", ".mkv", ".avi", ".m4v"}:
+        return "video"
+    if ext in {
+        ".pdf",
+        ".zip",
+        ".rar",
+        ".7z",
+        ".doc",
+        ".docx",
+        ".ppt",
+        ".pptx",
+        ".xls",
+        ".xlsx",
+    }:
+        return "doc"
+    return None
 
 
 def _persist_resolved_media(
@@ -854,53 +1001,64 @@ def gpt_new_draft(channel: Channel) -> dict[str, Any] | None:
 
 def gpt_generate_post_payload(channel: Channel, article: dict[str, Any] | None = None) -> dict[str, Any] | None:
     sys = _channel_system_prompt(channel)
+    recent_texts = _recent_post_texts(channel)
+    avoid_texts: list[str] = []
+    max_attempts = max(int(os.getenv("GPT_DUPLICATE_MAX_ATTEMPTS", 3)), 1)
+    similarity_threshold = float(os.getenv("GPT_DUPLICATE_THRESHOLD", 0.9))
 
-    instructions = [
-        "Zwróć dokładnie jeden obiekt JSON zawierający pola:",
-        "- post: obiekt z polem text zawierającym gotową treść posta zgodną z zasadami kanału;",
-        "- media: lista 0-5 obiektów opisujących multimedia do posta.",
-        "Każdy obiekt media MUSI mieć pola: type (photo/video/doc), resolver (np. twitter/telegram/instagram/rss) oraz reference – obiekt z prawdziwymi identyfikatorami źródła (np. {\"tg_post_url\": \"https://t.me/...\", \"posted_at\": \"2024-06-09T10:32:00Z\"}).",
-        "Pole identyfikator (jeśli użyte) ma zawierać rzeczywistą wartość identyfikatora, a nie nazwę pola ani placeholder.",
-        "Jeśli brak klucza specyficznego dla platformy, użyj reference.source_locator z kanonicznym adresem URL do zasobu.",
-        "Używaj wyłącznie angielskich nazw pól w formacie snake_case (ASCII, bez spacji i znaków diakrytycznych).",
-        "Nie podawaj bezpośrednich linków do plików – zwróć wyłącznie identyfikatory potrzebne do pobrania media po naszej stronie.",
-        "Jeśli media pochodzą z artykułu lub innego źródła, dołącz dostępne metadane (caption, posted_at, author).",
-        "Pole has_spoiler (true/false) jest opcjonalne i dotyczy wyłącznie zdjęć wymagających ukrycia.",
-    ]
-
-    if channel.max_chars:
-        instructions.append(
-            "Długość odpowiedzi musi mieścić się w limicie znaków opisanym w systemowym promptcie."
+    for attempt in range(1, max_attempts + 1):
+        usr = _build_user_prompt(channel, article, avoid_texts)
+        logger.info(
+            "GPT draft request (channel=%s attempt=%s)\nSYSTEM:\n%s\nUSER:\n%s",
+            channel.id,
+            attempt,
+            sys,
+            usr,
+        )
+        raw = gpt_generate_text(
+            sys,
+            usr,
+            response_format={"type": "json_object"},
+        )
+        if raw is None:
+            return None
+        payload = _parse_gpt_payload(raw)
+        if payload is None:
+            logger.warning(
+                "GPT draft response (channel=%s attempt=%s) nie zawiera poprawnego JSON",
+                channel.id,
+                attempt,
+            )
+            return None
+        logger.info(
+            "GPT draft response (channel=%s attempt=%s): %s",
+            channel.id,
+            attempt,
+            json.dumps(payload, ensure_ascii=False),
         )
 
-    article_context = _article_context(article)
-    if article_context:
-        instructions.append("Korzystaj z poniższych danych artykułu:")
-        instructions.append(article_context)
+        text = ""
+        post_data = payload.get("post")
+        if isinstance(post_data, dict):
+            text = str(post_data.get("text") or "").strip()
+        if not text:
+            return payload
 
-    usr = "\n".join(instructions)
-    logger.info(
-        "GPT draft request (channel=%s)\nSYSTEM:\n%s\nUSER:\n%s",
-        channel.id,
-        sys,
-        usr,
-    )
-    raw = gpt_generate_text(
-        sys,
-        usr,
-        response_format={"type": "json_object"},
-    )
-    if raw is None:
-        return None
-    payload = _parse_gpt_payload(raw)
-    if payload is None:
-        logger.warning("GPT draft response (channel=%s) nie zawiera poprawnego JSON", channel.id)
-        return None
-    logger.info(
-        "GPT draft response (channel=%s): %s",
-        channel.id,
-        json.dumps(payload, ensure_ascii=False),
-    )
+        scores = _score_similar_texts(text, recent_texts)
+        best_score = scores[0][0] if scores else 0.0
+        if best_score < similarity_threshold or attempt >= max_attempts:
+            return payload
+
+        duplicates = [original for score, original in scores if score >= similarity_threshold]
+        logger.info(
+            "GPT draft detected high similarity %.3f with %s entries for channel %s",
+            best_score,
+            len(duplicates),
+            channel.id,
+        )
+        avoid_candidates = duplicates[:3] + [text]
+        avoid_texts = _merge_avoid_texts(avoid_texts, avoid_candidates)
+
     return payload
 
 def gpt_rewrite_text(channel: Channel, text: str, editor_prompt: str) -> str:
@@ -1277,6 +1435,9 @@ def cache_media(pm: PostMedia):
     path = parsed.path or ""
     ext = os.path.splitext(path)[-1].lower()
     content: bytes | None = None
+    detected_type: str | None = None
+    content_type: str | None = None
+    original_type = pm.type
 
     if parsed.scheme in ("http", "https"):
         timeout_s = float(os.getenv("MEDIA_DOWNLOAD_TIMEOUT", 30))
@@ -1305,14 +1466,14 @@ def cache_media(pm: PostMedia):
             logger.warning("Pusty plik zwrócony z %s dla media %s", url, pm.id)
             return pm.cache_path or ""
 
+        content_type = response.headers.get("content-type") or ""
         if not ext:
-            content_type = (response.headers.get("content-type") or "").split(";")[0].strip()
-            if content_type:
-                guessed = mimetypes.guess_extension(content_type)
-                if guessed:
-                    ext = guessed
+            guessed = mimetypes.guess_extension(content_type.split(";")[0].strip())
+            if guessed:
+                ext = guessed
         if not ext:
             ext = ".bin"
+        detected_type = _detect_media_type(ext, content_type)
     else:
         if parsed.scheme == "file":
             src = unquote(path)
@@ -1332,6 +1493,9 @@ def cache_media(pm: PostMedia):
             return pm.cache_path or ""
         if not ext:
             ext = os.path.splitext(src)[-1] or ".bin"
+        if not content_type:
+            content_type = mimetypes.guess_type(src)[0]
+        detected_type = detected_type or _detect_media_type(ext, content_type)
 
     fname = cache_dir / f"{pm.id}{ext}"
     try:
@@ -1343,5 +1507,19 @@ def cache_media(pm: PostMedia):
 
     pm.cache_path = fname.as_posix()
     pm.expires_at = timezone.now() + timedelta(days=int(os.getenv("MEDIA_CACHE_TTL_DAYS", 7)))
-    pm.save()
+    update_fields = ["cache_path", "expires_at"]
+
+    detected_type = detected_type or _detect_media_type(ext, content_type)
+    if detected_type and detected_type != original_type:
+        pm.type = detected_type
+        if "type" not in update_fields:
+            update_fields.append("type")
+        ref_data = dict(pm.reference_data or {})
+        if ref_data.get("detected_type") != detected_type:
+            ref_data["detected_type"] = detected_type
+            pm.reference_data = ref_data
+            if "reference_data" not in update_fields:
+                update_fields.append("reference_data")
+
+    pm.save(update_fields=update_fields)
     return pm.cache_path
