@@ -704,6 +704,10 @@ def _channel_constraints_prompt(channel: Channel) -> str:
 
     if getattr(channel, "no_links_in_text", False):
         rules.append("Nie dodawaj linków w treści.")
+        
+    sources_prompt = _channel_sources_prompt(channel).strip()
+    if sources_prompt:
+        rules.append(sources_prompt)
 
     return "\n".join(rule for rule in rules if rule)
 
@@ -758,18 +762,13 @@ def _channel_sources_prompt(channel: Channel) -> str:
     selected = _select_channel_sources(channel, limit=1)
     if not selected:
         return ""
-
+    
     source = selected[0]
-    name = (source.name or "").strip()
     url = (source.url or "").strip()
-    priority = getattr(source, "priority", 0)
-    label = url
-    if name:
-        label = f"{name} – {url}"
 
     lines = [
-        "Preferowane  źródło:",
-        f"{label}",
+        "źródło:",
+        f"{url}",
     ]
     return "\n".join(lines)
 
@@ -905,7 +904,7 @@ def _build_user_prompt(
             "(np. twitter/telegram/instagram/rss) oraz reference – obiekt z prawdziwymi"
             " identyfikatorami źródła (np. {\"tg_post_url\": \"https://t.me/...\"," 
             " \"posted_at\": \"2024-06-09T10:32:00Z\"})."
-            "Jeśli scrappujesz zwykłą stronę www, postaraj się podać media z artykułu"
+            "Jeśli jest to strona www, podaj url media zdjęcie/video z artykułu"
         ),
         (
             " Jeśli nie masz dopasowanego medium, zwróć pustą listę media."
@@ -919,7 +918,7 @@ def _build_user_prompt(
         "Używaj wyłącznie angielskich nazw pól w formacie snake_case (ASCII, bez spacji i znaków diakrytycznych).",
         (
             "Jeśli media pochodzą z artykułu lub innego źródła, dołącz dostępne metadane"
-            " (caption, posted_at, author)."
+            " (caption (max 20znaków), posted_at, author)."
         ),
         "Pole has_spoiler (true/false) jest opcjonalne i dotyczy wyłącznie zdjęć wymagających ukrycia.",
     ]
@@ -929,9 +928,6 @@ def _build_user_prompt(
             "Długość odpowiedzi musi mieścić się w limicie znaków opisanym w poleceniach kanału."
         )
 
-    sources_prompt = _channel_sources_prompt(channel).strip()
-    if sources_prompt:
-        instructions.append(sources_prompt)
 
     article_context = _article_context(article)
     if article_context:
