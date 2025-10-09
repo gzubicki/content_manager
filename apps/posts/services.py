@@ -994,7 +994,6 @@ def gpt_generate_text(
                     ],
                     "tools": [
                         {"type": "web_search"},
-                        {"type": "image_generation"},
                     ],
                 }
                 _log_openai_request("responses.create", responses_payload, context=context)
@@ -1032,6 +1031,9 @@ def gpt_generate_text(
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt},
             ],
+            "tools": [
+                        {"type": "web_search"},
+                    ],
         }
         if response_format is not None:
             chat_kwargs["response_format"] = response_format
