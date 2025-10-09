@@ -288,9 +288,9 @@ def _build_user_prompt(
         "- post: obiekt z polem text zawierającym gotową treść posta zgodną z zasadami kanału;",
         "- media: lista 0-5 obiektów opisujących multimedia do posta.",
         (
-            "Każdy obiekt media MUSI mieć pola: type (photo/video/doc), resolver "
+            "Każdy obiekt media powinien zawierać resolver "
             "(np. twitter/telegram/instagram/rss) oraz reference – obiekt z prawdziwymi"
-            " identyfikatorami źródła (np. {\"tg_post_url\": \"https://t.me/...\","
+            " identyfikatorami źródła (np. {\"tg_post_url\": \"https://t.me/...\"," 
             " \"posted_at\": \"2024-06-09T10:32:00Z\"})."
         ),
         (
@@ -322,7 +322,7 @@ def _build_user_prompt(
 
     if channel.max_chars:
         instructions.append(
-            "Długość odpowiedzi musi mieścić się w limicie znaków opisanym w systemowym promptcie."
+            "Długość odpowiedzi musi mieścić się w limicie znaków opisanym w poleceniach kanału."
         )
 
     article_context = _article_context(article)
@@ -1054,17 +1054,17 @@ def gpt_new_draft(channel: Channel) -> dict[str, Any] | None:
 
 
 def gpt_generate_post_payload(channel: Channel, article: dict[str, Any] | None = None) -> dict[str, Any] | None:
-    sys = _channel_system_prompt(channel)
+    channel_prompt = _channel_system_prompt(channel)
     recent_texts = _recent_post_texts(channel)
     avoid_texts: list[str] = []
     max_attempts = max(int(os.getenv("GPT_DUPLICATE_MAX_ATTEMPTS", 3)), 1)
     similarity_threshold = float(os.getenv("GPT_DUPLICATE_THRESHOLD", 0.9))
 
     for attempt in range(1, max_attempts + 1):
-        usr = _build_user_prompt(channel, article, avoid_texts)
+        system_prompt = _build_user_prompt(channel, article, avoid_texts)
         raw = gpt_generate_text(
-            sys,
-            usr,
+            system_prompt,
+            channel_prompt,
             response_format={"type": "json_object"},
             log_context={
                 "channel_id": channel.id,
@@ -1114,15 +1114,15 @@ def gpt_generate_post_payload(channel: Channel, article: dict[str, Any] | None =
     return payload
 
 def gpt_rewrite_text(channel: Channel, text: str, editor_prompt: str) -> str:
-    sys = _channel_system_prompt(channel)
-    usr = (
+    channel_prompt = _channel_system_prompt(channel)
+    system_prompt = (
         "Przepisz poniższy tekst zgodnie z zasadami i wytycznymi edytora. "
-        "Zachowaj charakter kanału, wymagania dotyczące długości, emoji oraz stopki opisane w systemowym promptcie."
+        "Zachowaj charakter kanału, wymagania dotyczące długości, emoji oraz stopki opisane w poleceniach kanału."
 
     )
     rewritten = gpt_generate_text(
-        sys,
-        usr,
+        system_prompt,
+        channel_prompt,
         log_context={
             "channel_id": channel.id,
             "purpose": "rewrite",
