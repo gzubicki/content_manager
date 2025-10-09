@@ -122,6 +122,7 @@
   function buildRequestUrl() {
     const url = new URL(window.location.href, window.location.origin);
     url.searchParams.set("_partial", "cards");
+    url.searchParams.set("_ts", String(Date.now()));
     return url.toString();
   }
 
@@ -149,8 +150,10 @@
     try {
       const response = await fetch(buildRequestUrl(), {
         credentials: "same-origin",
+        cache: "no-store",
         headers: {
           "X-Requested-With": "XMLHttpRequest",
+          "Cache-Control": "no-cache",
         },
         signal: controller.signal,
       });
