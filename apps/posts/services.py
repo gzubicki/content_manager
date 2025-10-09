@@ -11,7 +11,7 @@ import uuid
 from html import unescape
 from html.parser import HTMLParser
 from pathlib import Path
-from urllib.parse import urlparse, unquote
+from urllib.parse import urlparse, urlunparse, unquote
 import re
 
 import httpx
@@ -96,6 +96,95 @@ def _extract_meta_first(meta: dict[str, list[str]], keys: Iterable[str]) -> str:
             if candidate:
                 return candidate
     return ""
+
+
+def _is_twitter_host(host: str) -> bool:
+    if not host:
+        return False
+    lowered = host.lower().rstrip(".")
+    return (
+        lowered == "twitter.com"
+        or lowered.endswith(".twitter.com")
+        or lowered == "x.com"
+        or lowered.endswith(".x.com")
+    )
+
+
+def _extract_tweet_details(url: str) -> tuple[str, str, str]:
+    if not isinstance(url, str):
+        return "", "", ""
+    cleaned = url.strip()
+    if not cleaned:
+        return "", "", ""
+    try:
+        parsed = urlparse(cleaned)
+    except Exception:
+        return "", "", ""
+
+    host = parsed.hostname or ""
+    if not _is_twitter_host(host):
+        return "", "", ""
+
+    segments = [segment for segment in (parsed.path or "").split("/") if segment]
+    username = ""
+    candidate = ""
+
+    lower_segments = [segment.lower() for segment in segments]
+    if len(lower_segments) >= 3 and lower_segments[1] == "status":
+        username = segments[0]
+        candidate = segments[2]
+    elif len(lower_segments) >= 3 and lower_segments[0] == "i" and lower_segments[1] == "status":
+        candidate = segments[2]
+    elif len(lower_segments) >= 2 and lower_segments[-2] == "status":
+        if len(segments) >= 3:
+            username = segments[-3]
+        candidate = segments[-1]
+    elif segments:
+        username = segments[0]
+        candidate = segments[-1]
+
+    match = re.search(r"(\d{5,})", candidate or "")
+    tweet_id = match.group(1) if match else ""
+
+    if not tweet_id:
+        return "", username, ""
+
+    canonical_host = "x.com"
+    if username:
+        canonical_path = f"/{username}/status/{tweet_id}"
+    else:
+        canonical_path = f"/i/status/{tweet_id}"
+
+    canonical = urlunparse(
+        (
+            parsed.scheme or "https",
+            canonical_host,
+            canonical_path,
+            "",
+            "",
+            "",
+        )
+    )
+
+    return canonical, username, tweet_id
+
+
+def _reference_username(reference: Mapping[str, Any]) -> str:
+    for key in ("author_username", "user_screen_name", "username", "screen_name"):
+        value = reference.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return ""
+
+
+def _canonical_tweet_url(username: str, tweet_id: str) -> str:
+    tweet_id = (tweet_id or "").strip()
+    username = (username or "").strip()
+    if not tweet_id:
+        return ""
+    if username:
+        return f"https://x.com/{username}/status/{tweet_id}"
+    return f"https://x.com/i/status/{tweet_id}"
 
 
 def _extract_twitter_media_from_html(html: str, media_type: str) -> str:
@@ -373,6 +462,7 @@ _OPENAI_SEED: Optional[int] = None
 _SUPPORTED_MEDIA_TYPES = {"photo", "video", "doc"}
 _IDENTIFIER_KEYS = (
     "tweet_id",
+    "tweet_url",
     "tg_post_url",
     "message_id",
     "chat_id",
@@ -387,6 +477,7 @@ _IDENTIFIER_KEYS = (
 _PLACEHOLDER_IDENTIFIER_VALUES = {
     "tg_post_url",
     "tweet_id",
+    "tweet_url",
     "message_id",
     "chat_id",
     "video_id",
@@ -1003,6 +1094,15 @@ def _normalise_media_payload(media: Any, fallback_prompt: str) -> list[dict[str,
             ident_str = identifier.strip()
             if ident_str:
                 if ident_str.startswith(("http://", "https://")):
+                    canonical, url_username, url_tweet_id = _extract_tweet_details(ident_str)
+                    if canonical:
+                        reference.setdefault("tweet_url", canonical)
+                        if url_tweet_id:
+                            reference.setdefault("tweet_id", url_tweet_id)
+                        if url_username:
+                            reference.setdefault("author_username", url_username)
+                        if not resolver:
+                            resolver = "twitter"
                     if not source_url:
                         source_url = ident_str
                     if resolver == "telegram":
@@ -1022,13 +1122,63 @@ def _normalise_media_payload(media: Any, fallback_prompt: str) -> list[dict[str,
         if posted_at:
             reference.setdefault("posted_at", posted_at)
 
+        tweet_url_candidates: list[str] = []
+        tweet_url_value = reference.get("tweet_url")
+        if isinstance(tweet_url_value, str) and tweet_url_value.strip():
+            tweet_url_candidates.append(tweet_url_value.strip())
+        if source_url:
+            tweet_url_candidates.append(source_url)
+
+        canonical_tweet_url = ""
+        tweet_username = ""
+        tweet_identifier = ""
+        for candidate_url in tweet_url_candidates:
+            canonical, url_username, url_tweet_id = _extract_tweet_details(candidate_url)
+            if canonical and not canonical_tweet_url:
+                canonical_tweet_url = canonical
+            if url_username and not tweet_username:
+                tweet_username = url_username
+            if url_tweet_id and not tweet_identifier:
+                tweet_identifier = url_tweet_id
+            if canonical_tweet_url and tweet_identifier:
+                break
+
+        if canonical_tweet_url:
+            reference["tweet_url"] = canonical_tweet_url
+        if tweet_identifier:
+            reference.setdefault("tweet_id", tweet_identifier)
+        if tweet_username:
+            reference.setdefault("author_username", tweet_username)
+
         if not resolver:
-            if "tweet_id" in reference:
+            if reference.get("tweet_id") or reference.get("tweet_url"):
                 resolver = "twitter"
             elif "tg_post_url" in reference or source_url.startswith("https://t.me/"):
                 resolver = "telegram"
             elif "shortcode" in reference:
                 resolver = "instagram"
+
+        if resolver == "twitter":
+            username_hint = tweet_username or _reference_username(reference)
+            tweet_id_value = str(reference.get("tweet_id") or "").strip()
+            if tweet_id_value and not reference.get("tweet_url"):
+                canonical = _canonical_tweet_url(username_hint, tweet_id_value)
+                if canonical:
+                    reference["tweet_url"] = canonical
+                    canonical_tweet_url = canonical
+            elif reference.get("tweet_url") and not tweet_id_value:
+                canonical, _, detected_id = _extract_tweet_details(reference["tweet_url"])
+                if canonical:
+                    reference["tweet_url"] = canonical
+                    canonical_tweet_url = canonical
+                if detected_id:
+                    reference.setdefault("tweet_id", detected_id)
+                    tweet_identifier = detected_id
+            if username_hint and not reference.get("author_username"):
+                reference["author_username"] = username_hint
+
+        if resolver == "twitter" and canonical_tweet_url and not source_label:
+            source_label = canonical_tweet_url
 
         cleaned_reference: dict[str, str] = {}
         for key, value in reference.items():
@@ -1059,6 +1209,17 @@ def _normalise_media_payload(media: Any, fallback_prompt: str) -> list[dict[str,
             val = reference.pop("source_locator")
             if val:
                 reference.setdefault("tg_post_url", val)
+
+        if (
+            resolver == "twitter"
+            and reference.get("tweet_url")
+            and source_url
+            and (
+                source_url == reference["tweet_url"]
+                or (_is_twitter_host(urlparse(source_url).hostname or "") and not _looks_like_asset(source_url))
+            )
+        ):
+            source_url = ""
 
         if not source_url and not reference:
             logger.info("Pomijam media bez rozpoznawalnego identyfikatora ani URL: %s", entry)
