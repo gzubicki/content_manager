@@ -649,9 +649,8 @@ def _channel_sources_prompt(channel: Channel) -> str:
         label = f"{name} – {url}"
 
     lines = [
-        "Preferuj następujące źródło kanału (wybrane losowo według priorytetu):",
-        f"{label} (priorytet {priority})",
-        "W polu source wypisz dokładny permalink wpisu/artykułu wykorzystanego do przygotowania posta.",
+        "Preferowane  źródło:",
+        f"{label}",
     ]
     return "\n".join(lines)
 
