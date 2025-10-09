@@ -68,6 +68,12 @@ class MediaHandlingTest(TestCase):
         self.assertEqual(twitter_item["resolver"], "twitter")
         self.assertIn("tweet_id", twitter_item["reference"])
         self.assertEqual(twitter_item["reference"]["tweet_id"], "12345")
+        self.assertEqual(
+            twitter_item["reference"].get("tweet_url"), "https://x.com/i/status/12345"
+        )
+        self.assertEqual(
+            twitter_item["reference"].get("tweet_url"), "https://x.com/i/status/12345"
+        )
         self.assertEqual(twitter_item["posted_at"], "2025-01-01T12:00:00Z")
         telegram_item = result[1]
         self.assertEqual(telegram_item["resolver"], "telegram")
@@ -90,6 +96,71 @@ class MediaHandlingTest(TestCase):
             ref = media_entry.get("reference", {})
             self.assertNotIn("message_id", ref)
             self.assertNotEqual(ref.get("message_id"), "tg_post_url")
+
+    def test_normalise_media_payload_detects_twitter_url_in_source(self) -> None:
+        payload = [
+            {
+                "type": "photo",
+                "url": "https://twitter.com/Example/status/1234567890123456789/photo/1?ref_src=twsrc",
+            }
+        ]
+
+        result = services._normalise_media_payload(payload, "unused")
+
+        self.assertEqual(len(result), 1)
+        entry = result[0]
+        self.assertEqual(entry["resolver"], "twitter")
+        reference = entry.get("reference") or {}
+        self.assertEqual(
+            reference.get("tweet_url"), "https://x.com/Example/status/1234567890123456789"
+        )
+        self.assertEqual(reference.get("tweet_id"), "1234567890123456789")
+        self.assertEqual(reference.get("author_username"), "Example")
+        self.assertNotIn("source_url", entry)
+
+    def test_normalise_media_payload_adds_tweet_url_from_reference(self) -> None:
+        payload = [
+            {
+                "type": "video",
+                "reference": {
+                    "tweet_url": "https://mobile.twitter.com/Other/status/9876543210987654321",
+                },
+            }
+        ]
+
+        result = services._normalise_media_payload(payload, "unused")
+
+        self.assertEqual(len(result), 1)
+        entry = result[0]
+        self.assertEqual(entry["resolver"], "twitter")
+        reference = entry.get("reference") or {}
+        self.assertEqual(
+            reference.get("tweet_url"), "https://x.com/Other/status/9876543210987654321"
+        )
+        self.assertEqual(reference.get("tweet_id"), "9876543210987654321")
+        self.assertEqual(reference.get("author_username"), "Other")
+
+    def test_normalise_media_payload_does_not_misclassify_similar_domains(self) -> None:
+        payload = [
+            {
+                "type": "photo",
+                "url": "https://plex.com/article/20240101",
+            }
+        ]
+
+        result = services._normalise_media_payload(payload, "unused")
+
+        self.assertEqual(len(result), 1)
+        entry = result[0]
+        self.assertNotEqual(entry.get("resolver"), "twitter")
+        self.assertEqual(entry.get("source_url"), "https://plex.com/article/20240101")
+
+    def test_extract_tweet_details_ignores_non_twitter_hosts(self) -> None:
+        canonical, username, tweet_id = services._extract_tweet_details("https://codex.com/foo")
+
+        self.assertEqual(canonical, "")
+        self.assertEqual(username, "")
+        self.assertEqual(tweet_id, "")
 
     def test_attach_media_from_payload_skips_items_without_url(self) -> None:
         PostMedia.objects.create(post=self.post, type="photo", source_url="https://old.example/a.jpg")
