@@ -400,6 +400,7 @@ def _build_user_prompt(
     instructions = [
         "Zwróć dokładnie jeden obiekt JSON zawierający pola:",
         "- post: obiekt z polem text zawierającym gotową treść posta zgodną z zasadami kanału;",
+        "- source: zródła na których oparłeś artykuł, powienien tu być dokładny link wpisu/artykułu;",
         "- media: lista 0-5 obiektów opisujących multimedia do posta.",
         (
             "Każdy obiekt media powinien zawierać resolver "
@@ -409,7 +410,6 @@ def _build_user_prompt(
         ),
         (
             "Treść posta oraz wszystkie media muszą opisywać to samo wydarzenie lub wpis."
-            " Nie wolno łączyć tekstu z mediami pochodzącymi z innych, niepowiązanych źródeł."
             " Jeśli nie masz dopasowanego medium, zwróć pustą listę media."
         ),
         "Pole identyfikator (jeśli użyte) ma zawierać rzeczywistą wartość identyfikatora, a nie nazwę pola ani placeholder.",
@@ -418,14 +418,7 @@ def _build_user_prompt(
             " kanoniczny adres strony źródłowej (np. permalink posta lub artykułu),"
             " zamiast podawać bezpośredni link do pliku multimedialnego."
         ),
-        "Nie podawaj bezpośrednich linków do plików – korzystaj z referencji platformy.",
-        (
-            "Jeśli korzystasz z wpisów Telegram (linki https://t.me/…), potraktuj każdą"
-            " pojedynczą wiadomość jako oddzielne źródło. Użyj jednego konkretnego"
-            " wpisu i zapisz go w reference.tg_post_url zamiast mieszać treści z kilku"
-            " komunikatów."
-        ),
-        "Nie dodawaj tekstu poza opisanym obiektem JSON.",
+       
         "Używaj wyłącznie angielskich nazw pól w formacie snake_case (ASCII, bez spacji i znaków diakrytycznych).",
         (
             "Jeśli media pochodzą z artykułu lub innego źródła, dołącz dostępne metadane"
