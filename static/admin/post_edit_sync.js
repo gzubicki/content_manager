@@ -453,6 +453,7 @@
       return;
     }
     syncField(document.getElementById("id_text"), post.text || "");
+    syncField(document.getElementById("id_source_url"), post.source_url || "");
     syncField(document.getElementById("id_status"), post.status || "");
     syncField(document.getElementById("id_schedule_mode"), post.schedule_mode || "");
     syncField(document.getElementById("id_channel"), post.channel_id ? String(post.channel_id) : "");
