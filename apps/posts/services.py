@@ -1,4 +1,5 @@
 import base64
+import hashlib
 import json
 import logging
 import mimetypes
@@ -18,8 +19,9 @@ from openai import (
     BadRequestError,
 )
 
-from datetime import timedelta
+from datetime import datetime, timedelta
 from django.utils import timezone
+from django.utils.formats import date_format
 from django.conf import settings
 from telegram import Bot
 from rapidfuzz import fuzz
@@ -273,11 +275,23 @@ def _build_user_prompt(
             " identyfikatorami źródła (np. {\"tg_post_url\": \"https://t.me/...\","
             " \"posted_at\": \"2024-06-09T10:32:00Z\"})."
         ),
+        (
+            "Treść posta oraz wszystkie media muszą opisywać to samo wydarzenie lub wpis."
+            " Nie wolno łączyć tekstu z mediami pochodzącymi z innych, niepowiązanych źródeł."
+            " Jeśli nie masz dopasowanego medium, zwróć pustą listę media."
+        ),
         "Pole identyfikator (jeśli użyte) ma zawierać rzeczywistą wartość identyfikatora, a nie nazwę pola ani placeholder.",
         (
             "Jeżeli brak dedykowanych kluczy platformy, ustaw reference.source_locator na"
             " kanoniczny adres strony źródłowej (np. permalink posta lub artykułu),"
             " zamiast podawać bezpośredni link do pliku multimedialnego."
+        ),
+        "Nie podawaj bezpośrednich linków do plików – korzystaj z referencji platformy.",
+        (
+            "Jeśli korzystasz z wpisów Telegram (linki https://t.me/…), potraktuj każdą"
+            " pojedynczą wiadomość jako oddzielne źródło. Użyj jednego konkretnego"
+            " wpisu i zapisz go w reference.tg_post_url zamiast mieszać treści z kilku"
+            " komunikatów."
         ),
         "Nie dodawaj tekstu poza opisanym obiektem JSON.",
         "Używaj wyłącznie angielskich nazw pól w formacie snake_case (ASCII, bez spacji i znaków diakrytycznych).",
@@ -1082,6 +1096,84 @@ def gpt_rewrite_text(channel: Channel, text: str, editor_prompt: str) -> str:
     )
     rewritten = gpt_generate_text(sys, usr)
     return rewritten or text
+
+
+def _current_metadata(post: Post) -> dict[str, Any]:
+    metadata = getattr(post, "source_metadata", {})
+    if isinstance(metadata, dict):
+        return dict(metadata)
+    return {}
+
+
+def _rewrite_section(metadata: dict[str, Any]) -> dict[str, Any]:
+    rewrite = metadata.get("rewrite")
+    if isinstance(rewrite, dict):
+        return dict(rewrite)
+    return {}
+
+
+def _format_timestamp(value: datetime | None) -> tuple[str, str]:
+    if value is None:
+        return "", ""
+    local = timezone.localtime(value)
+    return value.isoformat(), date_format(local, "d.m.Y H:i")
+
+
+def _text_checksum(text: str) -> str:
+    return hashlib.sha256((text or "").encode("utf-8")).hexdigest()
+
+
+def mark_rewrite_requested(post: Post, *, prompt: str = "", auto_save: bool = True) -> dict[str, Any]:
+    """Zapisz w metadanych, że dla posta zlecono korektę GPT."""
+
+    metadata = _current_metadata(post)
+    rewrite = _rewrite_section(metadata)
+
+    requested_at = timezone.now()
+    requested_iso, requested_display = _format_timestamp(requested_at)
+
+    rewrite.update(
+        {
+            "status": "pending",
+            "prompt": prompt,
+            "requested_at": requested_iso,
+            "requested_display": requested_display,
+            "completed_at": "",
+            "completed_display": "",
+            "text_checksum": _text_checksum(post.text or ""),
+        }
+    )
+
+    metadata["rewrite"] = rewrite
+    post.source_metadata = metadata
+    if auto_save:
+        post.save(update_fields=["source_metadata"])
+    return rewrite
+
+
+def mark_rewrite_completed(post: Post, *, auto_save: bool = True) -> dict[str, Any]:
+    """Zapisz w metadanych moment zakończenia korekty GPT."""
+
+    metadata = _current_metadata(post)
+    rewrite = _rewrite_section(metadata)
+
+    completed_at = timezone.now()
+    completed_iso, completed_display = _format_timestamp(completed_at)
+
+    rewrite.update(
+        {
+            "status": "completed",
+            "completed_at": completed_iso,
+            "completed_display": completed_display,
+            "text_checksum": _text_checksum(post.text or ""),
+        }
+    )
+
+    metadata["rewrite"] = rewrite
+    post.source_metadata = metadata
+    if auto_save:
+        post.save(update_fields=["source_metadata"])
+    return rewrite
 
 
 def _media_expiry_deadline():

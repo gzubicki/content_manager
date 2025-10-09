@@ -8,6 +8,9 @@
   let isFetching = false;
   let statusEndpoint = "";
   let previewBridge = window.postEditBridge || null;
+  let noticeRoot = null;
+  let rewriteInitialized = false;
+  let lastCompletionChecksum = "";
 
   function fieldKey(field){
     if (!field){
@@ -457,6 +460,72 @@
     syncField(document.getElementById("id_scheduled_at_1"), post.scheduled_time || "");
   }
 
+  function buildRewriteText(state){
+    const status = state && typeof state === "object" ? (state.status || "") : "";
+    if (status === "pending"){
+      const when = state.requested_display || "przed chwilą";
+      return `⏳ Korekta GPT w toku — zlecono ${when}.`;
+    }
+    if (status === "completed"){
+      let text = "✅ Wpis wrócił z korekty GPT";
+      if (state.completed_display){
+        text += ` (${state.completed_display})`;
+      }
+      return `${text}.`;
+    }
+    return "";
+  }
+
+  function renderRewriteNotice(state, highlight){
+    if (!noticeRoot){
+      return;
+    }
+    noticeRoot.innerHTML = "";
+    const text = buildRewriteText(state);
+    if (!text){
+      noticeRoot.dataset.rewriteStatus = "";
+      return;
+    }
+    const status = state.status || "";
+    const notice = document.createElement("div");
+    notice.className = "post-edit__notice";
+    if (status === "pending"){
+      notice.classList.add("post-edit__notice--pending");
+    } else if (status === "completed"){
+      notice.classList.add("post-edit__notice--done");
+    }
+    notice.textContent = text;
+    if (highlight){
+      notice.classList.add("post-edit__notice--highlight");
+      setTimeout(() => {
+        notice.classList.remove("post-edit__notice--highlight");
+      }, 4000);
+    }
+    noticeRoot.appendChild(notice);
+    noticeRoot.dataset.rewriteStatus = status;
+  }
+
+  function handleRewriteState(state){
+    if (!state || typeof state !== "object"){
+      renderRewriteNotice(null, false);
+      if (rewriteInitialized){
+        lastCompletionChecksum = "";
+      }
+      return;
+    }
+    const checksum = state.text_checksum || state.textChecksum || "";
+    const status = state.status || "";
+    let highlight = false;
+    if (status === "completed" && checksum){
+      if (rewriteInitialized && checksum !== lastCompletionChecksum){
+        highlight = true;
+      }
+      lastCompletionChecksum = checksum;
+    }
+    renderRewriteNotice(state, highlight);
+    rewriteInitialized = true;
+  }
+
   function applyPayload(payload){
     if (!payload || typeof payload !== "object"){
       return;
@@ -464,6 +533,7 @@
     try {
       syncPostFields(payload.post || null);
       syncMediaList(payload.media || []);
+      handleRewriteState(payload.rewrite || null);
       const bridge = previewBridge || window.postEditBridge;
       if (bridge && typeof bridge.refreshMedia === "function"){
         bridge.refreshMedia();
@@ -529,11 +599,22 @@
     if (!root){
       return;
     }
-    const url = (root.getAttribute("data-status-url") || "").trim();
-    if (!url){
-      return;
+    noticeRoot = root.querySelector("[data-post-edit-notices]");
+
+    const stateNode = document.getElementById("post-rewrite-state");
+    if (stateNode){
+      try {
+        const initialState = JSON.parse(stateNode.textContent || "{}") || {};
+        handleRewriteState(initialState);
+      } catch(err){
+        handleRewriteState(null);
+      }
     }
-    statusEndpoint = url;
+
+    const url = (root.getAttribute("data-status-url") || "").trim();
+    if (url){
+      statusEndpoint = url;
+    }
 
     const form = root.querySelector("form");
     if (form){
@@ -545,6 +626,8 @@
       previewBridge = event && event.detail ? event.detail : window.postEditBridge;
     });
 
-    scheduleNext(INITIAL_DELAY);
+    if (statusEndpoint){
+      scheduleNext(INITIAL_DELAY);
+    }
   });
 })();
