@@ -908,7 +908,11 @@ class ScheduledPostAdmin(BasePostAdmin):
 
     def filter_queryset(self, qs):
         return qs.filter(
-            status__in=[Post.Status.APPROVED, Post.Status.SCHEDULED],
+            status__in=[
+                Post.Status.APPROVED,
+                Post.Status.SCHEDULED,
+                Post.Status.PUBLISHING,
+            ],
             scheduled_at__isnull=False,
         )
 
