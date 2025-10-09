@@ -1,7 +1,9 @@
 import json
+from datetime import timedelta
 from unittest.mock import patch
 
 from django.test import TestCase
+from django.utils import timezone
 
 from apps.posts import services
 from apps.posts.models import Channel, ChannelSource, Post
@@ -112,7 +114,40 @@ class ChannelPromptPropagationTest(TestCase):
         mock_select.assert_called_with(self.channel, limit=1)
 
         system_prompt, _ = mock_gpt.call_args[0][:2]
-        self.assertIn("Preferuj następujące źródło", system_prompt)
         self.assertIn(primary.url, system_prompt)
         self.assertNotIn(secondary.url, system_prompt)
-        self.assertIn("priorytet", system_prompt)
+        self.assertNotIn("Preferuj", system_prompt)
+        self.assertNotIn("źródło:", system_prompt)
+        self.assertNotIn("priorytet", system_prompt)
+
+    def test_recent_headlines_are_included_for_last_24_hours(self):
+        Post.objects.create(
+            channel=self.channel,
+            text="Nagłówek A\nDalsza część wpisu",
+            status=Post.Status.PUBLISHED,
+            scheduled_at=timezone.now() - timedelta(hours=1),
+        )
+        Post.objects.create(
+            channel=self.channel,
+            text="Drugi post bez entera",
+            status=Post.Status.DRAFT,
+        )
+        old_post = Post.objects.create(
+            channel=self.channel,
+            text="Stary nagłówek\nNie powinien się pojawić",
+            status=Post.Status.PUBLISHED,
+            scheduled_at=timezone.now() - timedelta(days=3),
+        )
+        Post.objects.filter(pk=old_post.pk).update(
+            created_at=timezone.now() - timedelta(days=3)
+        )
+
+        with patch("apps.posts.services.gpt_generate_text") as mock_gpt:
+            mock_gpt.return_value = json.dumps({"post": {"text": "tekst"}, "media": []})
+            services.gpt_generate_post_payload(self.channel)
+
+        system_prompt, _ = mock_gpt.call_args[0][:2]
+        self.assertIn("nagłówkami wpisów z ostatnich 24 godzin", system_prompt)
+        self.assertIn("Nagłówek A", system_prompt)
+        self.assertIn("Drugi post bez entera", system_prompt)
+        self.assertNotIn("Stary nagłówek", system_prompt)
