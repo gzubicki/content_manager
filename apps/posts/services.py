@@ -4,11 +4,13 @@ import json
 import logging
 import mimetypes
 import os
+import random
 import textwrap
 import uuid
 from pathlib import Path
 from urllib.parse import urlparse, unquote
 
+import httpx
 from openai import (
     OpenAI,
     RateLimitError,
@@ -24,7 +26,7 @@ from django.utils.formats import date_format
 from django.conf import settings
 from telegram import Bot
 from rapidfuzz import fuzz
-from .models import Channel, Post, PostMedia
+from .models import Channel, ChannelSource, Post, PostMedia
 from dateutil import tz
 from typing import Any, Dict, List, Optional, Iterable
 from collections.abc import Mapping
@@ -287,6 +289,67 @@ def _channel_system_prompt(channel: Channel) -> str:
     return base
 
 
+def _select_channel_sources(
+    channel: Channel,
+    *,
+    limit: int = 3,
+    rng: random.Random | None = None,
+) -> list[ChannelSource]:
+    try:
+        manager = channel.sources
+    except AttributeError:
+        return []
+
+    queryset = manager.filter(is_active=True)
+    sources = [
+        source
+        for source in queryset
+        if isinstance(source.url, str) and source.url.strip()
+    ]
+    if not sources or limit <= 0:
+        return []
+
+    pool = list(sources)
+    weights = [max(int(getattr(item, "priority", 1) or 0), 0) for item in pool]
+    rng = rng or random
+    selected: list[ChannelSource] = []
+    total = min(limit, len(pool))
+    for _ in range(total):
+        if not pool:
+            break
+        if not any(weights):
+            weights = [1 for _ in pool]
+        choice = rng.choices(pool, weights=weights, k=1)[0]
+        idx = pool.index(choice)
+        selected.append(choice)
+        pool.pop(idx)
+        weights.pop(idx)
+    return selected
+
+
+def _channel_sources_prompt(channel: Channel) -> str:
+    selected = _select_channel_sources(channel)
+    if not selected:
+        return ""
+
+    lines = [
+        "Preferuj następujące źródła kanału (wybrane losowo według priorytetu):",
+    ]
+    for idx, source in enumerate(selected, 1):
+        name = (source.name or "").strip()
+        url = (source.url or "").strip()
+        priority = getattr(source, "priority", 0)
+        label = f"{idx}. {url}"
+        if name:
+            label = f"{idx}. {name} – {url}"
+        label = f"{label} (priorytet {priority})"
+        lines.append(label)
+    lines.append(
+        "W polu source wypisz dokładny permalink wpisu/artykułu wykorzystanego do przygotowania posta."
+    )
+    return "\n".join(lines)
+
+
 def _article_context(article: dict[str, Any] | None) -> str:
     if not isinstance(article, dict) or not article:
         return ""
@@ -429,7 +492,12 @@ def _build_user_prompt(
             " kanoniczny adres strony źródłowej (np. permalink posta lub artykułu),"
             " zamiast podawać bezpośredni link do pliku multimedialnego."
         ),
-       
+        (
+            "Jeśli korzystasz z wpisów Telegram, pamiętaj o zachowaniu sensu i chronologii całego wątku,"
+            " aby poprawnie oddać kontekst wydarzeń."
+        ),
+        "Nie podawaj bezpośrednich linków do plików w treści posta.",
+
         "Używaj wyłącznie angielskich nazw pól w formacie snake_case (ASCII, bez spacji i znaków diakrytycznych).",
         (
             "Jeśli media pochodzą z artykułu lub innego źródła, dołącz dostępne metadane"
@@ -442,6 +510,10 @@ def _build_user_prompt(
         instructions.append(
             "Długość odpowiedzi musi mieścić się w limicie znaków opisanym w poleceniach kanału."
         )
+
+    sources_prompt = _channel_sources_prompt(channel).strip()
+    if sources_prompt:
+        instructions.append(sources_prompt)
 
     article_context = _article_context(article)
     if article_context:
@@ -491,6 +563,59 @@ def _guess_media_type_from_url(url: str, fallback: str) -> str:
     if ext in DOC_EXTENSIONS:
         return "doc"
     return fallback
+
+
+def _normalise_article_sources(raw: Any) -> list[dict[str, str]]:
+    def _coerce(entry: Any) -> dict[str, str] | None:
+        if isinstance(entry, str):
+            url = entry.strip()
+            if not url:
+                return None
+            return {"url": url}
+        if isinstance(entry, Mapping):
+            url_value = (
+                str(
+                    entry.get("url")
+                    or entry.get("link")
+                    or entry.get("source")
+                    or entry.get("href")
+                    or ""
+                )
+                .strip()
+            )
+            if not url_value:
+                return None
+            label_value = (
+                str(
+                    entry.get("label")
+                    or entry.get("title")
+                    or entry.get("name")
+                    or ""
+                )
+                .strip()
+            )
+            payload: dict[str, str] = {"url": url_value}
+            if label_value:
+                payload["label"] = label_value
+            return payload
+        return None
+
+    if isinstance(raw, list):
+        seen: set[str] = set()
+        normalised: list[dict[str, str]] = []
+        for item in raw:
+            processed = _coerce(item)
+            if not processed:
+                continue
+            url = processed["url"]
+            if url in seen:
+                continue
+            seen.add(url)
+            normalised.append(processed)
+        return normalised
+
+    single = _coerce(raw)
+    return [single] if single else []
 
 
 def _normalise_media_payload(media: Any, fallback_prompt: str) -> list[dict[str, Any]]:
@@ -1072,6 +1197,8 @@ def _parse_gpt_payload(raw: str) -> dict[str, Any] | None:
         "media": media,
         "raw_response": cleaned,
     }
+    if "source" in data:
+        payload["source"] = data.get("source")
     return payload
 
 
@@ -1528,7 +1655,13 @@ def attach_media_from_payload(post: Post, media_payload: list[dict[str, Any]]):
         if extra_snapshots:
             source_entries.extend(extra_snapshots)
 
-    post.source_metadata = {"media": source_entries}
+    metadata = getattr(post, "source_metadata", {})
+    if not isinstance(metadata, dict):
+        metadata = {}
+    else:
+        metadata = dict(metadata)
+    metadata["media"] = source_entries
+    post.source_metadata = metadata
     post.save(update_fields=["source_metadata"])
 
 
@@ -1546,13 +1679,20 @@ def create_post_from_payload(channel: Channel, payload: dict[str, Any]) -> Post:
         for raw_item in media_items:
             if isinstance(raw_item, dict):
                 source_meta_entries.append(_media_source_snapshot(raw_item))
+    article_sources = _normalise_article_sources(payload.get("source"))
+    metadata: dict[str, Any] = {}
+    if article_sources:
+        metadata["article"] = {"sources": article_sources}
+    if source_meta_entries:
+        metadata.setdefault("media", source_meta_entries)
+
     post = Post.objects.create(
         channel=channel,
         text=text,
         status="DRAFT",
         origin="gpt",
         generated_prompt=raw_payload,
-        source_metadata={"media": source_meta_entries} if source_meta_entries else {},
+        source_metadata=metadata,
     )
     if isinstance(media_items, list):
         attach_media_from_payload(post, media_items)
