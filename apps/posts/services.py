@@ -9,7 +9,6 @@ import uuid
 from pathlib import Path
 from urllib.parse import urlparse, unquote
 
-import httpx
 from openai import (
     OpenAI,
     RateLimitError,
@@ -57,7 +56,7 @@ def _bot_for(channel: Channel):
         return None
     return Bot(token=token)
 
-_oai = None
+_oai: OpenAI | None = None
 _OPENAI_SEED: Optional[int] = None
 
 _SUPPORTED_MEDIA_TYPES = {"photo", "video", "doc"}
@@ -99,6 +98,9 @@ _IDENTIFIER_KEY_ALIASES = {
     "source locator": "source_locator",
 }
 
+_REQUIRED_OPENAI_TOOL = "web_search"
+_OPTIONAL_OPENAI_TOOLS = {"image_generation"}
+
 
 def _client():
     global _oai
@@ -106,10 +108,122 @@ def _client():
         key = os.getenv("OPENAI_API_KEY", "")
         if not key:
             raise RuntimeError("Brak OPENAI_API_KEY – drafty wymagają GPT.")
-        timeout_s = float(os.getenv("OPENAI_TIMEOUT", 60))
-        max_retries = int(os.getenv("OPENAI_MAX_RETRIES", 0))
-        _oai = OpenAI(api_key=key, max_retries=max_retries, timeout=timeout_s)
+        timeout_default = 60.0
+        try:
+            timeout_s = float(os.getenv("OPENAI_TIMEOUT", timeout_default))
+        except (TypeError, ValueError):
+            logger.warning("OPENAI_TIMEOUT musi być liczbą – używam wartości domyślnej %.1f", timeout_default)
+            timeout_s = timeout_default
+
+        try:
+            max_retries_raw = os.getenv("OPENAI_MAX_RETRIES", "0")
+            max_retries = int(str(max_retries_raw).strip() or 0)
+        except ValueError:
+            logger.warning("OPENAI_MAX_RETRIES musi być liczbą całkowitą – ustawiam 0")
+            max_retries = 0
+        if max_retries < 0:
+            logger.warning("OPENAI_MAX_RETRIES nie może być ujemne – ustawiam 0")
+            max_retries = 0
+
+        if timeout_s <= 0:
+            logger.warning("OPENAI_TIMEOUT musi być dodatnie – używam wartości domyślnej %.1f", timeout_default)
+            timeout_s = timeout_default
+
+        client_kwargs: dict[str, Any] = {
+            "timeout": timeout_s,
+            "max_retries": max_retries,
+        }
+
+        base_url = os.getenv("OPENAI_BASE_URL", "").strip()
+        if base_url:
+            client_kwargs["base_url"] = base_url
+
+        organization = os.getenv("OPENAI_ORG", "").strip() or os.getenv("OPENAI_ORGANIZATION", "").strip()
+        if organization:
+            client_kwargs["organization"] = organization
+
+        project = os.getenv("OPENAI_PROJECT", "").strip()
+        if project:
+            client_kwargs["project"] = project
+
+        _oai = OpenAI(**client_kwargs)
     return _oai
+
+
+def _ensure_internet_tools(payload: dict[str, Any]) -> dict[str, Any]:
+    enriched = dict(payload)
+    tools: list[dict[str, Any]] = [dict(tool) for tool in enriched.get("tools", []) or []]
+    has_required_tool = any(tool.get("type") == _REQUIRED_OPENAI_TOOL for tool in tools)
+    if not has_required_tool:
+        tools.insert(0, {"type": _REQUIRED_OPENAI_TOOL})
+    enriched["tools"] = tools
+
+    tool_choice = enriched.get("tool_choice") or {}
+    if tool_choice.get("type") != "tool" or tool_choice.get("name") != _REQUIRED_OPENAI_TOOL:
+        enriched["tool_choice"] = {"type": "tool", "name": _REQUIRED_OPENAI_TOOL}
+    return enriched
+
+
+def _responses_payload_variants(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    primary = _ensure_internet_tools(payload)
+    variants: list[dict[str, Any]] = [primary]
+
+    tools = primary.get("tools", [])
+    fallback_tools = [tool for tool in tools if tool.get("type") not in _OPTIONAL_OPENAI_TOOLS]
+    if fallback_tools and len(fallback_tools) != len(tools):
+        fallback_payload = dict(primary)
+        fallback_payload["tools"] = fallback_tools
+        variants.append(fallback_payload)
+    return variants
+
+
+def _call_openai_responses(client: OpenAI, payload: dict[str, Any], *, context: dict[str, Any] | None = None):
+    variants = _responses_payload_variants(payload)
+    last_error: BadRequestError | None = None
+    for attempt, attempt_payload in enumerate(variants, start=1):
+        attempt_context = dict(context or {})
+        attempt_context.setdefault("internet_enforced", True)
+        attempt_context["internet_attempt"] = attempt
+        _log_openai_request("responses.create", attempt_payload, context=attempt_context)
+        try:
+            return client.responses.create(**attempt_payload)
+        except BadRequestError as exc:
+            last_error = exc
+            message = str(exc)
+            if _REQUIRED_OPENAI_TOOL in message:
+                logger.error(
+                    "Model %s nie wspiera narzędzia %s – wybierz model z dostępem do internetu.",
+                    attempt_payload.get("model"),
+                    _REQUIRED_OPENAI_TOOL,
+                )
+                raise
+            if attempt < len(variants):
+                logger.warning(
+                    "Model %s odrzucił dodatkowe narzędzia (%s) – próbuję ponownie z minimalnym zestawem.",
+                    attempt_payload.get("model"),
+                    message,
+                )
+            else:
+                raise
+    if last_error is not None:
+        raise last_error
+    raise RuntimeError("Brak wariantów zapytania do OpenAI.")
+
+
+def _combine_response_text(response: Any) -> str:
+    text_chunks: list[str] = []
+    output_items = getattr(response, "output", None) or []
+    for item in output_items:
+        content = getattr(item, "content", None) or []
+        for part in content:
+            text = getattr(part, "text", None)
+            if text:
+                text_chunks.append(text)
+    if not text_chunks:
+        fallback_text = getattr(response, "output_text", None)
+        if isinstance(fallback_text, str) and fallback_text.strip():
+            text_chunks.append(fallback_text.strip())
+    return "\n".join(chunk.strip() for chunk in text_chunks if chunk).strip()
 
 
 def _openai_seed() -> Optional[int]:
@@ -286,16 +400,16 @@ def _build_user_prompt(
     instructions = [
         "Zwróć dokładnie jeden obiekt JSON zawierający pola:",
         "- post: obiekt z polem text zawierającym gotową treść posta zgodną z zasadami kanału;",
+        "- source: zródła na których oparłeś artykuł, powienien tu być dokładny link wpisu/artykułu;",
         "- media: lista 0-5 obiektów opisujących multimedia do posta.",
         (
-            "Każdy obiekt media MUSI mieć pola: type (photo/video/doc), resolver "
+            "Każdy obiekt media powinien zawierać resolver "
             "(np. twitter/telegram/instagram/rss) oraz reference – obiekt z prawdziwymi"
-            " identyfikatorami źródła (np. {\"tg_post_url\": \"https://t.me/...\","
+            " identyfikatorami źródła (np. {\"tg_post_url\": \"https://t.me/...\"," 
             " \"posted_at\": \"2024-06-09T10:32:00Z\"})."
         ),
         (
             "Treść posta oraz wszystkie media muszą opisywać to samo wydarzenie lub wpis."
-            " Nie wolno łączyć tekstu z mediami pochodzącymi z innych, niepowiązanych źródeł."
             " Jeśli nie masz dopasowanego medium, zwróć pustą listę media."
         ),
         "Pole identyfikator (jeśli użyte) ma zawierać rzeczywistą wartość identyfikatora, a nie nazwę pola ani placeholder.",
@@ -304,14 +418,7 @@ def _build_user_prompt(
             " kanoniczny adres strony źródłowej (np. permalink posta lub artykułu),"
             " zamiast podawać bezpośredni link do pliku multimedialnego."
         ),
-        "Nie podawaj bezpośrednich linków do plików – korzystaj z referencji platformy.",
-        (
-            "Jeśli korzystasz z wpisów Telegram (linki https://t.me/…), potraktuj każdą"
-            " pojedynczą wiadomość jako oddzielne źródło. Użyj jednego konkretnego"
-            " wpisu i zapisz go w reference.tg_post_url zamiast mieszać treści z kilku"
-            " komunikatów."
-        ),
-        "Nie dodawaj tekstu poza opisanym obiektem JSON.",
+       
         "Używaj wyłącznie angielskich nazw pól w formacie snake_case (ASCII, bez spacji i znaków diakrytycznych).",
         (
             "Jeśli media pochodzą z artykułu lub innego źródła, dołącz dostępne metadane"
@@ -322,7 +429,7 @@ def _build_user_prompt(
 
     if channel.max_chars:
         instructions.append(
-            "Długość odpowiedzi musi mieścić się w limicie znaków opisanym w systemowym promptcie."
+            "Długość odpowiedzi musi mieścić się w limicie znaków opisanym w poleceniach kanału."
         )
 
     article_context = _article_context(article)
@@ -970,78 +1077,39 @@ def gpt_generate_text(
         logger.warning("Pomijam generowanie GPT: %s", exc)
         return None
     try:
-        model = os.getenv("OPENAI_MODEL", "gpt-4.1")
+        model = os.getenv("OPENAI_MODEL", "gpt-5")
         temperature = float(os.getenv("OPENAI_TEMPERATURE", 0.2))
         seed = _openai_seed()
         context = dict(log_context or {})
 
-        use_tools = response_format is None
-        if use_tools:
-            try:
-                responses_payload: dict[str, Any] = {
-                    "model": model,
-                    "temperature": temperature,
-                    "seed": seed,
-                    "input": [
-                        {
-                            "role": "system",
-                            "content": [{"type": "text", "text": system_prompt}],
-                        },
-                        {
-                            "role": "user",
-                            "content": [{"type": "text", "text": user_prompt}],
-                        },
-                    ],
-                    "tools": [
-                        {"type": "web_search"},
-                    ],
-                }
-                _log_openai_request("responses.create", responses_payload, context=context)
-                response = cli.responses.create(**responses_payload)
-                text_chunks: list[str] = []
-                output_items = getattr(response, "output", None) or []
-                for item in output_items:
-                    content = getattr(item, "content", None) or []
-                    for part in content:
-                        text = getattr(part, "text", None)
-                        if text:
-                            text_chunks.append(text)
-                if not text_chunks:
-                    fallback_text = getattr(response, "output_text", None)
-                    if isinstance(fallback_text, str) and fallback_text.strip():
-                        text_chunks.append(fallback_text.strip())
-                combined = "\n".join(chunk.strip() for chunk in text_chunks if chunk).strip()
-                if combined:
-                    return combined
-            except BadRequestError as exc:
-                error_param = getattr(exc, "param", "") or ""
-                if "tools" in error_param or "tools" in str(exc):
-                    logger.warning(
-                        "Model %s odrzucił narzędzia (%s) – fallback do zapytania bez tools.",
-                        model,
-                        error_param or exc,
-                    )
-                else:
-                    raise
-
-        chat_kwargs: dict[str, Any] = {
+        responses_payload: dict[str, Any] = {
             "model": model,
             "temperature": temperature,
-            "messages": [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt},
+            "input": [
+                {
+                    "role": "system",
+                    "content": [{"type": "text", "text": system_prompt}],
+                },
+                {
+                    "role": "user",
+                    "content": [{"type": "text", "text": user_prompt}],
+                },
             ],
             "tools": [
-                        {"type": "web_search"},
-                    ],
+                {"type": "web_search"},
+                {"type": "image_generation"},
+            ],
         }
-        if response_format is not None:
-            chat_kwargs["response_format"] = response_format
         if seed is not None:
-            chat_kwargs["seed"] = seed
-        _log_openai_request("chat.completions.create", chat_kwargs, context=context)
-        chat_response = cli.chat.completions.create(**chat_kwargs)
-        return chat_response.choices[0].message.content.strip()
+            responses_payload["seed"] = seed
+        if response_format is not None:
+            responses_payload["response_format"] = response_format
+
+        response = _call_openai_responses(cli, responses_payload, context=context)
+        combined = _combine_response_text(response)
+        if combined:
+            return combined
+        return None
     except RateLimitError as e:
         # twarde „insufficient_quota” – nie retry’ujemy, zwracamy None
         if "insufficient_quota" in str(e):
@@ -1056,17 +1124,17 @@ def gpt_new_draft(channel: Channel) -> dict[str, Any] | None:
 
 
 def gpt_generate_post_payload(channel: Channel, article: dict[str, Any] | None = None) -> dict[str, Any] | None:
-    sys = _channel_system_prompt(channel)
+    channel_prompt = _channel_system_prompt(channel)
     recent_texts = _recent_post_texts(channel)
     avoid_texts: list[str] = []
     max_attempts = max(int(os.getenv("GPT_DUPLICATE_MAX_ATTEMPTS", 3)), 1)
     similarity_threshold = float(os.getenv("GPT_DUPLICATE_THRESHOLD", 0.9))
 
     for attempt in range(1, max_attempts + 1):
-        usr = _build_user_prompt(channel, article, avoid_texts)
+        system_prompt = _build_user_prompt(channel, article, avoid_texts)
         raw = gpt_generate_text(
-            sys,
-            usr,
+            system_prompt,
+            channel_prompt,
             response_format={"type": "json_object"},
             log_context={
                 "channel_id": channel.id,
@@ -1116,15 +1184,15 @@ def gpt_generate_post_payload(channel: Channel, article: dict[str, Any] | None =
     return payload
 
 def gpt_rewrite_text(channel: Channel, text: str, editor_prompt: str) -> str:
-    sys = _channel_system_prompt(channel)
-    usr = (
+    channel_prompt = _channel_system_prompt(channel)
+    system_prompt = (
         "Przepisz poniższy tekst zgodnie z zasadami i wytycznymi edytora. "
-        "Zachowaj charakter kanału, wymagania dotyczące długości, emoji oraz stopki opisane w systemowym promptcie."
+        "Zachowaj charakter kanału, wymagania dotyczące długości, emoji oraz stopki opisane w poleceniach kanału."
 
     )
     rewritten = gpt_generate_text(
-        sys,
-        usr,
+        system_prompt,
+        channel_prompt,
         log_context={
             "channel_id": channel.id,
             "purpose": "rewrite",
