@@ -585,6 +585,10 @@ def _channel_constraints_prompt(channel: Channel) -> str:
 
     if getattr(channel, "no_links_in_text", False):
         rules.append("Nie dodawaj linków w treści.")
+        
+    sources_prompt = _channel_sources_prompt(channel).strip()
+    if sources_prompt:
+        rules.append(sources_prompt)
 
     return "\n".join(rule for rule in rules if rule)
 
@@ -639,18 +643,13 @@ def _channel_sources_prompt(channel: Channel) -> str:
     selected = _select_channel_sources(channel, limit=1)
     if not selected:
         return ""
-
+    
     source = selected[0]
-    name = (source.name or "").strip()
     url = (source.url or "").strip()
-    priority = getattr(source, "priority", 0)
-    label = url
-    if name:
-        label = f"{name} – {url}"
 
     lines = [
-        "Preferowane  źródło:",
-        f"{label}",
+        "Preferowane źródło:",
+        f"{url}",
     ]
     return "\n".join(lines)
 
@@ -810,9 +809,6 @@ def _build_user_prompt(
             "Długość odpowiedzi musi mieścić się w limicie znaków opisanym w poleceniach kanału."
         )
 
-    sources_prompt = _channel_sources_prompt(channel).strip()
-    if sources_prompt:
-        instructions.append(sources_prompt)
 
     article_context = _article_context(article)
     if article_context:
