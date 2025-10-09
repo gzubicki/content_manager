@@ -871,7 +871,7 @@ def _build_user_prompt(
             "(np. twitter/telegram/instagram/rss) oraz reference – obiekt z prawdziwymi"
             " identyfikatorami źródła (np. {\"tg_post_url\": \"https://t.me/...\"," 
             " \"posted_at\": \"2024-06-09T10:32:00Z\"})."
-            "Jeśli scrappujesz zwykłą stronę www, postaraj się podać media z artykułu"
+            "Jeśli jest to strona www, podaj url media zdjęcie/video z artykułu"
         ),
         (
             " Jeśli nie masz dopasowanego medium, zwróć pustą listę media."
