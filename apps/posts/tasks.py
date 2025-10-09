@@ -42,7 +42,7 @@ def task_publish_due():
     for p in due:
         publish_post.delay(p.id)
 
-async def _publish_async(post: Post):
+async def _publish_async(post: Post, medias):
     bot = services._bot_for(post.channel)
     if bot is None:
         logger.warning(
@@ -52,7 +52,6 @@ async def _publish_async(post: Post):
         )
         return None
     chat = post.channel.tg_channel_id
-    medias = list(post.media.all().order_by("order", "id"))
     sent_group_ids = []
     if medias:
         im = []
@@ -92,7 +91,7 @@ async def _publish_async(post: Post):
                         file_id = message.document.file_id
                     if file_id and record.tg_file_id != file_id:
                         record.tg_file_id = file_id
-                        record.save(update_fields=["tg_file_id"])
+                        await asyncio.to_thread(record.save, update_fields=["tg_file_id"])
         finally:
             for fh in opened_files:
                 try:
@@ -105,7 +104,8 @@ async def _publish_async(post: Post):
 @shared_task
 def publish_post(post_id: int):
     post = Post.objects.select_related("channel").get(id=post_id)
-    result = asyncio.run(_publish_async(post))
+    medias = list(post.media.all().order_by("order", "id"))
+    result = asyncio.run(_publish_async(post, medias))
     if result is None:
         return None
     sent_group_ids, msg_id = result
