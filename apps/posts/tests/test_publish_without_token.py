@@ -36,6 +36,7 @@ class PublishWithoutTokenTest(TestCase):
         self.assertEqual(post.status, "SCHEDULED")
         self.assertIsNone(post.message_id)
         self.assertIsNone(result)
+        self.assertEqual(post.source_metadata.get("publication", {}).get("status"), "failed")
 
     def test_publish_logs_forbidden(self):
         channel = Channel.objects.create(
@@ -64,3 +65,4 @@ class PublishWithoutTokenTest(TestCase):
         self.assertEqual(post.status, "SCHEDULED")
         self.assertIsNone(post.message_id)
         self.assertIsNone(result)
+        self.assertEqual(post.source_metadata.get("publication", {}).get("status"), "failed")
