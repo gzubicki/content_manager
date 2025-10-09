@@ -1068,7 +1068,6 @@ def gpt_generate_text(
     system_prompt: str,
     user_prompt: str,
     *,
-    response_format: dict[str, Any] | None = None,
     log_context: dict[str, Any] | None = None,
 ) -> str | None:
     try:
@@ -1135,7 +1134,6 @@ def gpt_generate_post_payload(channel: Channel, article: dict[str, Any] | None =
         raw = gpt_generate_text(
             system_prompt,
             channel_prompt,
-            response_format={"type": "json_object"},
             log_context={
                 "channel_id": channel.id,
                 "attempt": attempt,
