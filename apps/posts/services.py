@@ -1957,6 +1957,9 @@ def create_post_from_payload(channel: Channel, payload: dict[str, Any]) -> Post:
         if isinstance(post_section, Mapping):
             raw_article_sources = post_section.get("source") or post_section.get("sources")
     article_sources = _normalise_article_sources(raw_article_sources)
+    primary_source_url = ""
+    if article_sources:
+        primary_source_url = str(article_sources[0].get("url") or "").strip()
     metadata: dict[str, Any] = {}
     if article_sources:
         metadata["article"] = {"sources": article_sources}
@@ -1968,6 +1971,7 @@ def create_post_from_payload(channel: Channel, payload: dict[str, Any]) -> Post:
         text=text,
         status="DRAFT",
         origin="gpt",
+        source_url=primary_source_url,
         generated_prompt=raw_payload,
         source_metadata=metadata,
     )

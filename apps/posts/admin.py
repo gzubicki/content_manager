@@ -480,6 +480,7 @@ class BasePostAdmin(admin.ModelAdmin):
             "scheduled_display": scheduled_display,
             "channel_id": post.channel_id,
             "channel_name": channel_name,
+            "source_url": post.source_url or "",
             "generated_at": timezone.now().isoformat(),
         }
 
