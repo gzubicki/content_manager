@@ -3,6 +3,7 @@ import os
 from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
+import logging
 from uuid import uuid4
 
 from django import forms
@@ -29,7 +30,14 @@ from django.contrib.admin.templatetags.admin_urls import admin_urlname
 
 from . import services
 from .models import Channel, ChannelSource, DraftPost, Post, PostMedia, ScheduledPost
-from .tasks import task_gpt_generate_for_channel, task_gpt_rewrite_post
+from .tasks import (
+    task_gpt_generate_for_channel,
+    task_gpt_generate_from_article,
+    task_gpt_rewrite_post,
+)
+
+
+logger = logging.getLogger(__name__)
 from .drafts import iter_missing_draft_requirements
 from .validators import validate_post_text_for_channel
 
@@ -308,6 +316,65 @@ class RewritePromptForm(forms.Form):
         widget=forms.Textarea(attrs={"rows": 4}),
         help_text="Pozostaw puste, aby użyć domyślnej korekty stylu.",
     )
+
+
+class MultiFileInput(forms.ClearableFileInput):
+    allow_multiple_selected = True
+
+
+class GptDraftRequestForm(forms.Form):
+    channel = forms.ModelChoiceField(
+        label="Kanał",
+        queryset=Channel.objects.none(),
+    )
+    title = forms.CharField(
+        label="Tytuł / temat",
+        required=False,
+        max_length=256,
+    )
+    summary = forms.CharField(
+        label="Streszczenie",
+        required=False,
+        widget=forms.Textarea(attrs={"rows": 3}),
+    )
+    text = forms.CharField(
+        label="Treść źródłowa",
+        required=False,
+        widget=forms.Textarea(attrs={"rows": 10}),
+    )
+    source_url = forms.URLField(
+        label="Źródło (URL)",
+        required=False,
+    )
+    attachments = forms.FileField(
+        label="Załączniki (opcjonalne)",
+        required=False,
+        widget=MultiFileInput(attrs={"multiple": True}),
+        help_text="Dodaj pliki, które mają pomóc GPT w przygotowaniu draftu.",
+    )
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.fields["channel"].queryset = Channel.objects.all().order_by("name")
+        self.fields["channel"].empty_label = None
+        self.fields["source_url"].widget.attrs.setdefault("placeholder", "https://...")
+
+    def clean_attachments(self):
+        if not self.files:
+            return []
+        return self.files.getlist(self.add_prefix("attachments"))
+
+    def clean(self):
+        cleaned = super().clean()
+        has_text = bool((cleaned.get("text") or "").strip())
+        has_summary = bool((cleaned.get("summary") or "").strip())
+        has_source = bool((cleaned.get("source_url") or "").strip())
+        has_attachments = bool(cleaned.get("attachments"))
+        if not any((has_text, has_summary, has_source, has_attachments)):
+            raise forms.ValidationError(
+                "Podaj treść, streszczenie, źródło lub dodaj załączniki, aby wysłać dane do GPT."
+            )
+        return cleaned
 
 
 class BasePostAdmin(admin.ModelAdmin):
@@ -854,6 +921,8 @@ class BasePostAdmin(admin.ModelAdmin):
 class DraftPostAdmin(BasePostAdmin):
     approve_action = "approve"
     approve_path = "<int:object_id>/akceptuj/"
+    gpt_article_action = "gpt_article"
+    gpt_article_path = "dodaj-z-gpt/"
 
     def filter_queryset(self, qs):
         return qs.filter(status=Post.Status.DRAFT)
@@ -863,6 +932,11 @@ class DraftPostAdmin(BasePostAdmin):
         opts = self.model._meta
         custom = [
             path(
+                self.gpt_article_path,
+                self.admin_site.admin_view(self.gpt_article_view),
+                name=f"{opts.app_label}_{opts.model_name}_{self.gpt_article_action}",
+            ),
+            path(
                 self.approve_path,
                 self.admin_site.admin_view(self.approve_view),
                 name=f"{opts.app_label}_{opts.model_name}_{self.approve_action}",
@@ -870,8 +944,113 @@ class DraftPostAdmin(BasePostAdmin):
         ]
         return custom + urls
 
+    def changelist_view(self, request, extra_context=None):
+        response = super().changelist_view(request, extra_context=extra_context)
+        if hasattr(response, "context_data"):
+            try:
+                response.context_data["gpt_article_url"] = reverse(
+                    f"admin:{self.model._meta.app_label}_{self.model._meta.model_name}_{self.gpt_article_action}"
+                )
+            except NoReverseMatch:
+                response.context_data["gpt_article_url"] = None
+        return response
+
     def get_approve_url(self, post):
         return self._object_url(post, self.approve_action)
+
+    def _absolute_public_url(self, request, url: str) -> str:
+        url = (url or "").strip()
+        if not url:
+            return ""
+        if url.startswith("http://") or url.startswith("https://"):
+            return url
+        try:
+            return request.build_absolute_uri(url)
+        except Exception:
+            return url
+
+    def _store_gpt_attachment(self, request, upload) -> dict[str, str] | None:
+        try:
+            original_name = getattr(upload, "name", "") or ""
+            ext = Path(original_name).suffix or ".bin"
+            filename = f"gpt_sources/{uuid4().hex}{ext}"
+            stored_path = default_storage.save(filename, upload)
+            public_url = default_storage.url(stored_path)
+        except Exception:
+            logger.exception("Nie udało się zapisać załącznika dla GPT.")
+            return None
+
+        absolute_url = self._absolute_public_url(request, public_url)
+        media_type = guess_media_type(original_name, getattr(upload, "content_type", ""))
+        caption = Path(original_name).name if original_name else ""
+
+        payload: dict[str, str] = {
+            "type": media_type,
+            "source_url": absolute_url,
+        }
+        if caption:
+            payload["caption"] = caption
+        return payload
+
+    def _build_article_payload(self, request, cleaned_data: dict) -> dict[str, Any] | None:
+        article: dict[str, Any] = {}
+        post_section: dict[str, Any] = {}
+
+        title = (cleaned_data.get("title") or "").strip()
+        summary = (cleaned_data.get("summary") or "").strip()
+        text = (cleaned_data.get("text") or "").strip()
+        source_url = (cleaned_data.get("source_url") or "").strip()
+
+        if title:
+            post_section["title"] = title
+        if summary:
+            post_section["summary"] = summary
+        if text:
+            post_section["text"] = text
+        if source_url:
+            post_section["source"] = [{"url": source_url}]
+
+        if post_section:
+            article["post"] = post_section
+
+        attachments = cleaned_data.get("attachments") or []
+        media_entries: list[dict[str, str]] = []
+        for upload in attachments:
+            stored = self._store_gpt_attachment(request, upload)
+            if stored:
+                media_entries.append(stored)
+
+        if media_entries:
+            article["media"] = media_entries
+
+        return article or None
+
+    def gpt_article_view(self, request):
+        if not self.has_add_permission(request):
+            raise PermissionDenied
+
+        form = GptDraftRequestForm(request.POST or None, request.FILES or None)
+
+        if request.method == "POST" and form.is_valid():
+            channel: Channel = form.cleaned_data["channel"]
+            article_payload = self._build_article_payload(request, form.cleaned_data) or None
+            task_gpt_generate_from_article.delay(channel.id, article_payload)
+            self.message_user(
+                request,
+                "Wysłano dane do GPT – odśwież listę, aby zobaczyć nowy draft.",
+                level=messages.INFO,
+            )
+            return redirect(self._changelist_url())
+
+        context = {
+            **self.admin_site.each_context(request),
+            "opts": self.model._meta,
+            "title": "Nowy draft z GPT",
+            "form": form,
+            "media": form.media,
+            "changelist_url": self._changelist_url(),
+        }
+        return TemplateResponse(request, "admin/posts/gpt_draft_request.html", context)
 
     def approve_view(self, request, object_id):
         post = get_object_or_404(self.model, pk=object_id)
