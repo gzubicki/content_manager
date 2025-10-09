@@ -800,7 +800,7 @@ def _build_user_prompt(
         "Używaj wyłącznie angielskich nazw pól w formacie snake_case (ASCII, bez spacji i znaków diakrytycznych).",
         (
             "Jeśli media pochodzą z artykułu lub innego źródła, dołącz dostępne metadane"
-            " (caption, posted_at, author)."
+            " (caption (max 20znaków), posted_at, author)."
         ),
         "Pole has_spoiler (true/false) jest opcjonalne i dotyczy wyłącznie zdjęć wymagających ukrycia.",
     ]
