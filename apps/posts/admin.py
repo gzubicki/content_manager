@@ -678,6 +678,21 @@ class BasePostAdmin(admin.ModelAdmin):
     def get_publish_now_url(self, post):
         return None
 
+    def _prepare_for_immediate_publication(self, post: Post) -> None:
+        now = timezone.now()
+        updated_fields: set[str] = set()
+        if post.scheduled_at is None or post.scheduled_at > now:
+            post.scheduled_at = now
+            updated_fields.add("scheduled_at")
+        if post.status == Post.Status.APPROVED:
+            post.status = Post.Status.SCHEDULED
+            updated_fields.add("status")
+        publication = services.mark_publication_requested(post, auto_save=False)
+        if publication:
+            updated_fields.add("source_metadata")
+        if updated_fields:
+            post.save(update_fields=sorted(updated_fields))
+
     def get_urls(self):
         urls = super().get_urls()
         opts = self.model._meta
@@ -824,7 +839,11 @@ class BasePostAdmin(admin.ModelAdmin):
     @admin.action(description="Opublikuj teraz")
     def act_publish_now(self, request, qs):
         from .tasks import publish_post
+        allowed_statuses = {Post.Status.APPROVED, Post.Status.SCHEDULED}
         for post in qs:
+            if post.status not in allowed_statuses:
+                continue
+            self._prepare_for_immediate_publication(post)
             publish_post.delay(post.id)
 
     @admin.action(description="Usuń")
@@ -926,6 +945,7 @@ class ScheduledPostAdmin(BasePostAdmin):
 
         from .tasks import publish_post
 
+        self._prepare_for_immediate_publication(post)
         publish_post.delay(post.id)
         self.message_user(
             request,
