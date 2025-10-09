@@ -1470,6 +1470,7 @@ def _resolve_media_reference(
 
     def _reference_fallback_url() -> str:
         for key in (
+            "media_url",
             "direct_url",
             "download_url",
             "source_url",
