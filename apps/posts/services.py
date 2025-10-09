@@ -10,8 +10,6 @@ import textwrap
 import uuid
 from html import unescape
 from html.parser import HTMLParser
-from html import unescape
-from html.parser import HTMLParser
 from pathlib import Path
 from urllib.parse import urlparse, unquote
 import re
@@ -36,6 +34,8 @@ from .models import Channel, ChannelSource, Post, PostMedia
 from dateutil import tz
 from typing import Any, Dict, List, Optional, Iterable
 from collections.abc import Mapping
+
+import httpx
 
 import httpx
 
@@ -98,6 +98,41 @@ def _extract_meta_first(meta: dict[str, list[str]], keys: Iterable[str]) -> str:
     return ""
 
 
+def _extract_twitter_media_from_html(html: str, media_type: str) -> str:
+    parser = _MetaTagParser()
+    try:
+        parser.feed(html)
+    except Exception:
+        logger.exception(
+            "Nie udało się przeanalizować dokumentu HTML podczas wyszukiwania mediów Twittera"
+        )
+        parser.meta = {}
+
+    preferred_keys: list[str] = []
+    if media_type == "video":
+        preferred_keys.extend(
+            [
+                "og:video:url",
+                "og:video:secure_url",
+                "og:video",
+                "twitter:player:stream",
+            ]
+        )
+
+    if media_type in {"photo", "video"}:
+        preferred_keys.extend(["og:image", "og:image:url", "og:image:secure_url"])
+
+    direct_url = _extract_meta_first(getattr(parser, "meta", {}), preferred_keys)
+    if direct_url and _looks_like_asset(direct_url):
+        return direct_url
+
+    candidates = _extract_twimg_candidates(html)
+    if not candidates:
+        return ""
+    selected = _prefer_video_url(candidates) if media_type == "video" else _prefer_photo_url(candidates)
+    return selected
+
+
 def _resolve_media_via_twitter_html(url: str, media_type: str) -> str:
     timeout_s = float(os.getenv("MEDIA_DOWNLOAD_TIMEOUT", 30))
     headers = {
@@ -119,31 +154,7 @@ def _resolve_media_via_twitter_html(url: str, media_type: str) -> str:
         logger.warning("Twitter HTML fallback błąd sieci dla %s: %s", url, exc)
         return ""
 
-    parser = _MetaTagParser()
-    try:
-        parser.feed(response.text)
-    except Exception:
-        logger.exception("Nie udało się sparsować odpowiedzi HTML Twitter dla %s", url)
-        return ""
-
-    preferred_keys: list[str] = []
-    if media_type == "video":
-        preferred_keys.extend(
-            [
-                "og:video:url",
-                "og:video:secure_url",
-                "og:video",
-                "twitter:player:stream",
-            ]
-        )
-
-    if media_type in {"photo", "video"}:
-        preferred_keys.extend(["og:image", "og:image:url", "og:image:secure_url"])
-
-    direct_url = _extract_meta_first(parser.meta, preferred_keys)
-    if direct_url and _looks_like_asset(direct_url):
-        return direct_url
-    return ""
+    return _extract_twitter_media_from_html(response.text, media_type)
 
 
 def _extract_twimg_candidates(text: str) -> list[str]:
@@ -239,12 +250,7 @@ def _resolve_media_via_twstalker(
         logger.warning("TwStalker fallback błąd sieci dla %s: %s", url, exc)
         return ""
 
-    candidates = _extract_twimg_candidates(response.text)
-    if not candidates:
-        return ""
-    selected = (
-        _prefer_video_url(candidates) if media_type == "video" else _prefer_photo_url(candidates)
-    )
+    selected = _extract_twitter_media_from_html(response.text, media_type)
     if selected:
         logger.info(
             "Resolved media via TwStalker fallback %s -> %s (resolver=%s)",
@@ -253,6 +259,39 @@ def _resolve_media_via_twstalker(
             resolver,
         )
     return selected
+
+
+def _resolve_media_via_jina_proxy(url: str, media_type: str, resolver: str) -> str:
+    timeout_s = float(os.getenv("MEDIA_DOWNLOAD_TIMEOUT", 30))
+    headers = {
+        "User-Agent": os.getenv(
+            "MEDIA_HTML_USER_AGENT",
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+            "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+        )
+    }
+    proxied_url = f"https://r.jina.ai/{url}"
+    try:
+        response = httpx.get(proxied_url, timeout=timeout_s, headers=headers)
+        response.raise_for_status()
+    except httpx.HTTPStatusError as exc:
+        logger.warning(
+            "Jina proxy fallback zwrócił HTTP %s dla %s", exc.response.status_code, proxied_url
+        )
+        return ""
+    except httpx.RequestError as exc:
+        logger.warning("Jina proxy fallback błąd sieci dla %s: %s", proxied_url, exc)
+        return ""
+
+    resolved = _extract_twitter_media_from_html(response.text, media_type)
+    if resolved:
+        logger.info(
+            "Resolved media via Jina proxy fallback %s -> %s (resolver=%s)",
+            url,
+            resolved,
+            resolver,
+        )
+    return resolved
 
 
 def _resolve_media_via_html_fallback(
@@ -298,6 +337,9 @@ def _resolve_media_via_html_fallback(
             )
             if resolved:
                 return resolved
+        resolved = _resolve_media_via_jina_proxy(url, media_type, resolver)
+        if resolved:
+            return resolved
     return ""
 
 
