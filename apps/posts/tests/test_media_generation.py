@@ -310,3 +310,64 @@ class MediaHandlingTest(TestCase):
         pm.refresh_from_db()
         self.assertEqual(pm.type, "video")
         self.assertEqual(pm.reference_data.get("detected_type"), "video")
+
+
+class ArticleSourceMetadataTest(TestCase):
+    def setUp(self) -> None:
+        self.channel = Channel.objects.create(name="Kanał", slug="kanal", tg_channel_id="@kanal")
+
+    def test_create_post_from_payload_saves_article_sources(self) -> None:
+        payload = {
+            "post": {"text": "Nowy wpis"},
+            "media": [],
+            "source": [
+                "https://example.com/artykul-1",
+                {"url": "https://example.com/artykul-2", "title": "Raport"},
+            ],
+        }
+
+        post = services.create_post_from_payload(self.channel, payload)
+
+        metadata = post.source_metadata
+        self.assertIn("article", metadata)
+        sources = metadata["article"].get("sources", [])
+        self.assertEqual(len(sources), 2)
+        self.assertEqual(sources[0]["url"], "https://example.com/artykul-1")
+        self.assertEqual(sources[1]["label"], "Raport")
+
+    def test_attach_media_preserves_article_metadata(self) -> None:
+        post = services.create_post_from_payload(
+            self.channel,
+            {"post": {"text": "Nowy wpis"}, "media": [], "source": "https://example.com/a"},
+        )
+
+        payload = [{"type": "photo", "source_url": "https://example.com/img.jpg"}]
+
+        with patch("apps.posts.services.cache_media", return_value="/cache/img.jpg"):
+            services.attach_media_from_payload(post, payload)
+
+        metadata = post.source_metadata
+        self.assertIn("article", metadata)
+        self.assertIn("media", metadata)
+        self.assertEqual(metadata["article"]["sources"][0]["url"], "https://example.com/a")
+
+    def test_create_post_from_payload_reads_source_from_post_section(self) -> None:
+        payload = {
+            "post": {
+                "text": "Nowy wpis",
+                "source": [
+                    {"link": "https://example.com/artykul-1", "title": "Analiza"},
+                    "https://example.com/artykul-2",
+                ],
+            },
+            "media": [],
+        }
+
+        post = services.create_post_from_payload(self.channel, payload)
+
+        metadata = post.source_metadata
+        self.assertIn("article", metadata)
+        sources = metadata["article"].get("sources", [])
+        self.assertEqual(len(sources), 2)
+        self.assertEqual(sources[0]["label"], "Analiza")
+        self.assertEqual(sources[1]["url"], "https://example.com/artykul-2")

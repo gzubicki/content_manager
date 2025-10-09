@@ -34,6 +34,35 @@ class Channel(models.Model):
 
     def __str__(self): return self.name
 
+
+class ChannelSource(models.Model):
+    channel = models.ForeignKey(
+        Channel,
+        verbose_name="Kanał",
+        related_name="sources",
+        on_delete=models.CASCADE,
+    )
+    name = models.CharField("Nazwa", max_length=128)
+    url = models.URLField("Adres URL", max_length=500)
+    priority = models.PositiveIntegerField("Priorytet", default=1)
+    is_active = models.BooleanField("Aktywne", default=True)
+    created_at = models.DateTimeField("Utworzono", auto_now_add=True)
+    updated_at = models.DateTimeField("Zmieniono", auto_now=True)
+
+    class Meta:
+        verbose_name = "Źródło kanału"
+        verbose_name_plural = "Źródła kanału"
+        ordering = ("-is_active", "-priority", "name")
+        constraints = [
+            models.UniqueConstraint(
+                fields=["channel", "url"],
+                name="posts_channelsource_unique_channel_url",
+            )
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.name} ({self.url})"
+
 class Post(models.Model):
     class Status(models.TextChoices):
         DRAFT = "DRAFT", "DRAFT"
