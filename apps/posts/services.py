@@ -328,25 +328,23 @@ def _select_channel_sources(
 
 
 def _channel_sources_prompt(channel: Channel) -> str:
-    selected = _select_channel_sources(channel)
+    selected = _select_channel_sources(channel, limit=1)
     if not selected:
         return ""
 
+    source = selected[0]
+    name = (source.name or "").strip()
+    url = (source.url or "").strip()
+    priority = getattr(source, "priority", 0)
+    label = url
+    if name:
+        label = f"{name} – {url}"
+
     lines = [
-        "Preferuj następujące źródła kanału (wybrane losowo według priorytetu):",
+        "Preferuj następujące źródło kanału (wybrane losowo według priorytetu):",
+        f"{label} (priorytet {priority})",
+        "W polu source wypisz dokładny permalink wpisu/artykułu wykorzystanego do przygotowania posta.",
     ]
-    for idx, source in enumerate(selected, 1):
-        name = (source.name or "").strip()
-        url = (source.url or "").strip()
-        priority = getattr(source, "priority", 0)
-        label = f"{idx}. {url}"
-        if name:
-            label = f"{idx}. {name} – {url}"
-        label = f"{label} (priorytet {priority})"
-        lines.append(label)
-    lines.append(
-        "W polu source wypisz dokładny permalink wpisu/artykułu wykorzystanego do przygotowania posta."
-    )
     return "\n".join(lines)
 
 

@@ -105,11 +105,14 @@ class ChannelPromptPropagationTest(TestCase):
         with patch("apps.posts.services._select_channel_sources") as mock_select, patch(
             "apps.posts.services.gpt_generate_text"
         ) as mock_gpt:
-            mock_select.return_value = [primary, secondary]
+            mock_select.return_value = [primary]
             mock_gpt.return_value = json.dumps({"post": {"text": "tekst"}, "media": []})
             services.gpt_generate_post_payload(self.channel)
 
+        mock_select.assert_called_with(self.channel, limit=1)
+
         system_prompt, _ = mock_gpt.call_args[0][:2]
-        self.assertIn("Preferuj następujące źródła", system_prompt)
+        self.assertIn("Preferuj następujące źródło", system_prompt)
         self.assertIn(primary.url, system_prompt)
+        self.assertNotIn(secondary.url, system_prompt)
         self.assertIn("priorytet", system_prompt)
