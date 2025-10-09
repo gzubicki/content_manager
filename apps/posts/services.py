@@ -9,7 +9,6 @@ import uuid
 from pathlib import Path
 from urllib.parse import urlparse, unquote
 
-import httpx
 from openai import (
     OpenAI,
     RateLimitError,
@@ -57,7 +56,7 @@ def _bot_for(channel: Channel):
         return None
     return Bot(token=token)
 
-_oai = None
+_oai: OpenAI | None = None
 _OPENAI_SEED: Optional[int] = None
 
 _SUPPORTED_MEDIA_TYPES = {"photo", "video", "doc"}
@@ -99,6 +98,9 @@ _IDENTIFIER_KEY_ALIASES = {
     "source locator": "source_locator",
 }
 
+_REQUIRED_OPENAI_TOOL = "web_search"
+_OPTIONAL_OPENAI_TOOLS = {"image_generation"}
+
 
 def _client():
     global _oai
@@ -106,10 +108,122 @@ def _client():
         key = os.getenv("OPENAI_API_KEY", "")
         if not key:
             raise RuntimeError("Brak OPENAI_API_KEY – drafty wymagają GPT.")
-        timeout_s = float(os.getenv("OPENAI_TIMEOUT", 60))
-        max_retries = int(os.getenv("OPENAI_MAX_RETRIES", 0))
-        _oai = OpenAI(api_key=key, max_retries=max_retries, timeout=timeout_s)
+        timeout_default = 60.0
+        try:
+            timeout_s = float(os.getenv("OPENAI_TIMEOUT", timeout_default))
+        except (TypeError, ValueError):
+            logger.warning("OPENAI_TIMEOUT musi być liczbą – używam wartości domyślnej %.1f", timeout_default)
+            timeout_s = timeout_default
+
+        try:
+            max_retries_raw = os.getenv("OPENAI_MAX_RETRIES", "0")
+            max_retries = int(str(max_retries_raw).strip() or 0)
+        except ValueError:
+            logger.warning("OPENAI_MAX_RETRIES musi być liczbą całkowitą – ustawiam 0")
+            max_retries = 0
+        if max_retries < 0:
+            logger.warning("OPENAI_MAX_RETRIES nie może być ujemne – ustawiam 0")
+            max_retries = 0
+
+        if timeout_s <= 0:
+            logger.warning("OPENAI_TIMEOUT musi być dodatnie – używam wartości domyślnej %.1f", timeout_default)
+            timeout_s = timeout_default
+
+        client_kwargs: dict[str, Any] = {
+            "timeout": timeout_s,
+            "max_retries": max_retries,
+        }
+
+        base_url = os.getenv("OPENAI_BASE_URL", "").strip()
+        if base_url:
+            client_kwargs["base_url"] = base_url
+
+        organization = os.getenv("OPENAI_ORG", "").strip() or os.getenv("OPENAI_ORGANIZATION", "").strip()
+        if organization:
+            client_kwargs["organization"] = organization
+
+        project = os.getenv("OPENAI_PROJECT", "").strip()
+        if project:
+            client_kwargs["project"] = project
+
+        _oai = OpenAI(**client_kwargs)
     return _oai
+
+
+def _ensure_internet_tools(payload: dict[str, Any]) -> dict[str, Any]:
+    enriched = dict(payload)
+    tools: list[dict[str, Any]] = [dict(tool) for tool in enriched.get("tools", []) or []]
+    has_required_tool = any(tool.get("type") == _REQUIRED_OPENAI_TOOL for tool in tools)
+    if not has_required_tool:
+        tools.insert(0, {"type": _REQUIRED_OPENAI_TOOL})
+    enriched["tools"] = tools
+
+    tool_choice = enriched.get("tool_choice") or {}
+    if tool_choice.get("type") != "tool" or tool_choice.get("name") != _REQUIRED_OPENAI_TOOL:
+        enriched["tool_choice"] = {"type": "tool", "name": _REQUIRED_OPENAI_TOOL}
+    return enriched
+
+
+def _responses_payload_variants(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    primary = _ensure_internet_tools(payload)
+    variants: list[dict[str, Any]] = [primary]
+
+    tools = primary.get("tools", [])
+    fallback_tools = [tool for tool in tools if tool.get("type") not in _OPTIONAL_OPENAI_TOOLS]
+    if fallback_tools and len(fallback_tools) != len(tools):
+        fallback_payload = dict(primary)
+        fallback_payload["tools"] = fallback_tools
+        variants.append(fallback_payload)
+    return variants
+
+
+def _call_openai_responses(client: OpenAI, payload: dict[str, Any], *, context: dict[str, Any] | None = None):
+    variants = _responses_payload_variants(payload)
+    last_error: BadRequestError | None = None
+    for attempt, attempt_payload in enumerate(variants, start=1):
+        attempt_context = dict(context or {})
+        attempt_context.setdefault("internet_enforced", True)
+        attempt_context["internet_attempt"] = attempt
+        _log_openai_request("responses.create", attempt_payload, context=attempt_context)
+        try:
+            return client.responses.create(**attempt_payload)
+        except BadRequestError as exc:
+            last_error = exc
+            message = str(exc)
+            if _REQUIRED_OPENAI_TOOL in message:
+                logger.error(
+                    "Model %s nie wspiera narzędzia %s – wybierz model z dostępem do internetu.",
+                    attempt_payload.get("model"),
+                    _REQUIRED_OPENAI_TOOL,
+                )
+                raise
+            if attempt < len(variants):
+                logger.warning(
+                    "Model %s odrzucił dodatkowe narzędzia (%s) – próbuję ponownie z minimalnym zestawem.",
+                    attempt_payload.get("model"),
+                    message,
+                )
+            else:
+                raise
+    if last_error is not None:
+        raise last_error
+    raise RuntimeError("Brak wariantów zapytania do OpenAI.")
+
+
+def _combine_response_text(response: Any) -> str:
+    text_chunks: list[str] = []
+    output_items = getattr(response, "output", None) or []
+    for item in output_items:
+        content = getattr(item, "content", None) or []
+        for part in content:
+            text = getattr(part, "text", None)
+            if text:
+                text_chunks.append(text)
+    if not text_chunks:
+        fallback_text = getattr(response, "output_text", None)
+        if isinstance(fallback_text, str) and fallback_text.strip():
+            text_chunks.append(fallback_text.strip())
+    return "\n".join(chunk.strip() for chunk in text_chunks if chunk).strip()
 
 
 def _openai_seed() -> Optional[int]:
@@ -961,7 +1075,6 @@ def gpt_generate_text(
     system_prompt: str,
     user_prompt: str,
     *,
-    response_format: dict[str, Any] | None = None,
     log_context: dict[str, Any] | None = None,
 ) -> str | None:
     try:
@@ -970,76 +1083,36 @@ def gpt_generate_text(
         logger.warning("Pomijam generowanie GPT: %s", exc)
         return None
     try:
-        model = os.getenv("OPENAI_MODEL", "gpt-4.1")
+        model = os.getenv("OPENAI_MODEL", "gpt-5")
         temperature = float(os.getenv("OPENAI_TEMPERATURE", 0.2))
         seed = _openai_seed()
         context = dict(log_context or {})
 
-        use_tools = response_format is None
-        if use_tools:
-            try:
-                responses_payload: dict[str, Any] = {
-                    "model": model,
-                    "temperature": temperature,
-                    "seed": seed,
-                    "input": [
-                        {
-                            "role": "system",
-                            "content": [{"type": "text", "text": system_prompt}],
-                        },
-                        {
-                            "role": "user",
-                            "content": [{"type": "text", "text": user_prompt}],
-                        },
-                    ],
-                    "tools": [
-                        {"type": "web_search"},
-                        {"type": "image_generation"},
-                    ],
-                }
-                _log_openai_request("responses.create", responses_payload, context=context)
-                response = cli.responses.create(**responses_payload)
-                text_chunks: list[str] = []
-                output_items = getattr(response, "output", None) or []
-                for item in output_items:
-                    content = getattr(item, "content", None) or []
-                    for part in content:
-                        text = getattr(part, "text", None)
-                        if text:
-                            text_chunks.append(text)
-                if not text_chunks:
-                    fallback_text = getattr(response, "output_text", None)
-                    if isinstance(fallback_text, str) and fallback_text.strip():
-                        text_chunks.append(fallback_text.strip())
-                combined = "\n".join(chunk.strip() for chunk in text_chunks if chunk).strip()
-                if combined:
-                    return combined
-            except BadRequestError as exc:
-                error_param = getattr(exc, "param", "") or ""
-                if "tools" in error_param or "tools" in str(exc):
-                    logger.warning(
-                        "Model %s odrzucił narzędzia (%s) – fallback do zapytania bez tools.",
-                        model,
-                        error_param or exc,
-                    )
-                else:
-                    raise
-
-        chat_kwargs: dict[str, Any] = {
+        responses_payload: dict[str, Any] = {
             "model": model,
             "temperature": temperature,
-            "messages": [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt},
+            "input": [
+                {
+                    "role": "system",
+                    "content": [{"type": "input_text", "text": system_prompt}],
+                },
+                {
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": user_prompt}],
+                },
+            ],
+            "tools": [
+                {"type": "web_search"},
+                {"type": "image_generation"},
             ],
         }
-        if response_format is not None:
-            chat_kwargs["response_format"] = response_format
         if seed is not None:
-            chat_kwargs["seed"] = seed
-        _log_openai_request("chat.completions.create", chat_kwargs, context=context)
-        chat_response = cli.chat.completions.create(**chat_kwargs)
-        return chat_response.choices[0].message.content.strip()
+            responses_payload["seed"] = seed
+        response = _call_openai_responses(cli, responses_payload, context=context)
+        combined = _combine_response_text(response)
+        if combined:
+            return combined
+        return None
     except RateLimitError as e:
         # twarde „insufficient_quota” – nie retry’ujemy, zwracamy None
         if "insufficient_quota" in str(e):
@@ -1065,7 +1138,6 @@ def gpt_generate_post_payload(channel: Channel, article: dict[str, Any] | None =
         raw = gpt_generate_text(
             system_prompt,
             channel_prompt,
-            response_format={"type": "json_object"},
             log_context={
                 "channel_id": channel.id,
                 "attempt": attempt,
