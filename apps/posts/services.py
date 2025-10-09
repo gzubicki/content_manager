@@ -824,7 +824,7 @@ def _channel_sources_prompt(channel: Channel) -> str:
     url = (source.url or "").strip()
 
     lines = [
-        "Preferowane źródło:",
+        "źródło:",
         f"{url}",
     ]
     return "\n".join(lines)
