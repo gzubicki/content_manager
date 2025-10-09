@@ -417,6 +417,14 @@ class BasePostAdmin(admin.ModelAdmin):
         if obj and obj.pk:
             context["rewrite_url"] = self._object_url(obj, "rewrite")
             context["status_url"] = self._object_url(obj, "status")
+        rewrite_state = self._serialize_rewrite_state(obj) if obj else {}
+        context["rewrite_state"] = rewrite_state
+        context["rewrite_state_json"] = (
+            json.dumps(rewrite_state, cls=DjangoJSONEncoder)
+            .replace("</", "\\u003C/")
+            .replace("\u2028", "\\u2028")
+            .replace("\u2029", "\\u2029")
+        )
         channel_meta = list(Channel.objects.values("id", "name", "max_chars", "emoji_min", "emoji_max", "no_links_in_text"))
         context["channel_metadata_json"] = self._serialize_media(channel_meta)
         return super().render_change_form(request, context, add=add, change=change, form_url=form_url, obj=obj)
@@ -447,6 +455,25 @@ class BasePostAdmin(admin.ModelAdmin):
             "channel_id": post.channel_id,
             "channel_name": channel_name,
             "generated_at": timezone.now().isoformat(),
+        }
+
+    def _serialize_rewrite_state(self, post: Post | None) -> dict:
+        if post is None:
+            return {}
+        metadata = getattr(post, "source_metadata", {})
+        if not isinstance(metadata, dict):
+            return {}
+        rewrite = metadata.get("rewrite")
+        if not isinstance(rewrite, dict):
+            return {}
+        return {
+            "status": str(rewrite.get("status") or ""),
+            "prompt": rewrite.get("prompt") or "",
+            "requested_at": rewrite.get("requested_at") or "",
+            "requested_display": rewrite.get("requested_display") or "",
+            "completed_at": rewrite.get("completed_at") or "",
+            "completed_display": rewrite.get("completed_display") or "",
+            "text_checksum": rewrite.get("text_checksum") or "",
         }
 
     def _serialize_media_state(self, media_items: Iterable[PostMedia]) -> list[dict]:
@@ -596,6 +623,11 @@ class BasePostAdmin(admin.ModelAdmin):
                     post.is_draft = post.status == Post.Status.DRAFT
                     metadata = post.source_metadata if isinstance(getattr(post, "source_metadata", {}), dict) else {}
                     post.source_entries = metadata.get("media", []) if isinstance(metadata, dict) else []
+                    rewrite_state = self._serialize_rewrite_state(post)
+                    post.rewrite_state = rewrite_state
+                    post.rewrite_status = rewrite_state.get("status")
+                    post.rewrite_requested_display = rewrite_state.get("requested_display")
+                    post.rewrite_completed_display = rewrite_state.get("completed_display")
                 self._store_filters_in_session(request, cl)
                 remembered = bool(request.session.get(self._filters_session_key()))
             response.context_data.setdefault("request", request)
@@ -644,6 +676,7 @@ class BasePostAdmin(admin.ModelAdmin):
         data = {
             "post": self._serialize_post_state(post),
             "media": self._serialize_media_state(post.media.all()),
+            "rewrite": self._serialize_rewrite_state(post),
         }
         return JsonResponse(data, encoder=DjangoJSONEncoder)
 
@@ -700,6 +733,7 @@ class BasePostAdmin(admin.ModelAdmin):
 
         if request.method == "POST" and form.is_valid():
             prompt = (form.cleaned_data.get("prompt") or "").strip() or DEFAULT_REWRITE_PROMPT
+            services.mark_rewrite_requested(post, prompt=prompt)
             task_gpt_rewrite_post.delay(post.id, prompt)
             self.message_user(
                 request,
