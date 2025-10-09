@@ -132,11 +132,13 @@ async def _publish_async(post: Post, medias):
 def publish_post(post_id: int):
     post = Post.objects.select_related("channel").get(id=post_id)
     medias = list(post.media.all().order_by("order", "id"))
+    services.mark_publication_requested(post, auto_save=True)
     coroutine = _publish_async(post, medias)
     try:
         result = asyncio.run(coroutine)
     except Forbidden as exc:
         coroutine.close()
+        services.mark_publication_failed(post, reason="forbidden")
         logger.error(
             (
                 "Cannot publish post %s to channel %s (%s): %s. "
@@ -150,14 +152,24 @@ def publish_post(post_id: int):
         )
         return None
     if result is None:
+        services.mark_publication_failed(post, reason="missing_bot")
         return None
     sent_group_ids, msg_id = result
     if msg_id is None and sent_group_ids:
         msg_id = sent_group_ids[0]
+    now = timezone.now()
+    if post.scheduled_at is None:
+        post.scheduled_at = now
     post.message_id = msg_id
     post.dupe_score = services.compute_dupe(post)
     post.status = "PUBLISHED"
     post.save()
+    services.mark_publication_completed(
+        post,
+        message_id=msg_id,
+        group_message_ids=sent_group_ids,
+        auto_save=True,
+    )
     return {"group": sent_group_ids, "text": msg_id}
 
 @shared_task(bind=True,

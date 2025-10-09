@@ -1841,6 +1841,13 @@ def _rewrite_section(metadata: dict[str, Any]) -> dict[str, Any]:
     return {}
 
 
+def _publication_section(metadata: dict[str, Any]) -> dict[str, Any]:
+    publication = metadata.get("publication")
+    if isinstance(publication, dict):
+        return dict(publication)
+    return {}
+
+
 def _format_timestamp(value: datetime | None) -> tuple[str, str]:
     if value is None:
         return "", ""
@@ -1903,6 +1910,108 @@ def mark_rewrite_completed(post: Post, *, auto_save: bool = True) -> dict[str, A
     if auto_save:
         post.save(update_fields=["source_metadata"])
     return rewrite
+
+
+def mark_publication_requested(post: Post, *, auto_save: bool = True) -> dict[str, Any]:
+    """Zapisz w metadanych, że zlecono natychmiastową publikację."""
+
+    metadata = _current_metadata(post)
+    publication = _publication_section(metadata)
+
+    requested_at = timezone.now()
+    requested_iso, requested_display = _format_timestamp(requested_at)
+
+    if publication.get("status") != "pending" or not publication.get("requested_at"):
+        publication["requested_at"] = requested_iso
+        publication["requested_display"] = requested_display
+
+    publication["status"] = "pending"
+    publication["completed_at"] = publication.get("completed_at", "")
+    publication["completed_display"] = publication.get("completed_display", "")
+    publication["message_id"] = publication.get("message_id", "")
+    publication["group_message_ids"] = publication.get("group_message_ids", [])
+    publication["error"] = ""
+    publication["failed_at"] = ""
+    publication["failed_display"] = ""
+
+    metadata["publication"] = publication
+    post.source_metadata = metadata
+    if auto_save:
+        post.save(update_fields=["source_metadata"])
+    return publication
+
+
+def mark_publication_completed(
+    post: Post,
+    *,
+    message_id: int | None = None,
+    group_message_ids: Iterable[int] | None = None,
+    auto_save: bool = True,
+) -> dict[str, Any]:
+    """Uzupełnij metadane po pomyślnej publikacji."""
+
+    metadata = _current_metadata(post)
+    publication = _publication_section(metadata)
+
+    completed_iso, completed_display = _format_timestamp(timezone.now())
+
+    group_ids: list[int] = []
+    if group_message_ids:
+        for item in group_message_ids:
+            try:
+                group_ids.append(int(item))
+            except (TypeError, ValueError):
+                continue
+
+    publication.update(
+        {
+            "status": "completed",
+            "completed_at": completed_iso,
+            "completed_display": completed_display,
+            "requested_at": publication.get("requested_at", ""),
+            "requested_display": publication.get("requested_display", ""),
+            "message_id": str(message_id or ""),
+            "group_message_ids": group_ids,
+            "error": "",
+            "failed_at": "",
+            "failed_display": "",
+        }
+    )
+
+    metadata["publication"] = publication
+    post.source_metadata = metadata
+    if auto_save:
+        post.save(update_fields=["source_metadata"])
+    return publication
+
+
+def mark_publication_failed(
+    post: Post,
+    *,
+    reason: str = "",
+    auto_save: bool = True,
+) -> dict[str, Any]:
+    """Zapisz w metadanych błąd publikacji."""
+
+    metadata = _current_metadata(post)
+    publication = _publication_section(metadata)
+
+    failed_iso, failed_display = _format_timestamp(timezone.now())
+
+    publication.update(
+        {
+            "status": "failed",
+            "error": reason or publication.get("error", ""),
+            "failed_at": failed_iso,
+            "failed_display": failed_display,
+        }
+    )
+
+    metadata["publication"] = publication
+    post.source_metadata = metadata
+    if auto_save:
+        post.save(update_fields=["source_metadata"])
+    return publication
 
 
 def _media_expiry_deadline():
