@@ -34,6 +34,7 @@ from .models import Channel, ChannelSource, Post, PostMedia
 from dateutil import tz
 from typing import Any, Dict, List, Optional, Iterable
 from collections.abc import Mapping
+from django.db.models import Q
 
 import httpx
 
@@ -762,15 +763,13 @@ def _channel_sources_prompt(channel: Channel) -> str:
     selected = _select_channel_sources(channel, limit=1)
     if not selected:
         return ""
-    
+
     source = selected[0]
     url = (source.url or "").strip()
+    if not url:
+        return ""
 
-    lines = [
-        "źródło:",
-        f"{url}",
-    ]
-    return "\n".join(lines)
+    return url
 
 
 def _article_context(article: dict[str, Any] | None) -> str:
@@ -853,7 +852,58 @@ def _recent_post_texts(channel: Channel, *, limit: int = 40) -> list[str]:
     return [" ".join((text or "").split()) for text in queryset if text]
 
 
-def _score_similar_texts(candidate: str, existing: 
+def _extract_post_headline(text: str, *, max_length: int = 150) -> str:
+    lines = (text or "").splitlines()
+    headline = ""
+    for line in lines:
+        cleaned = line.strip()
+        if cleaned:
+            headline = cleaned
+            break
+    if not headline:
+        return ""
+    if len(headline) <= max_length:
+        return headline
+    truncated = headline[: max_length - 1].rstrip()
+    return (truncated + "…") if truncated else headline[:max_length]
+
+
+def _recent_post_headlines(
+    channel: Channel,
+    *,
+    max_items: int = 20,
+    window: timedelta = timedelta(hours=24),
+) -> list[str]:
+    if max_items <= 0:
+        return []
+
+    now = timezone.now()
+    cutoff = now - window
+    queryset = (
+        channel.posts.filter(
+            Q(created_at__gte=cutoff)
+            | Q(status=Post.Status.PUBLISHED, scheduled_at__gte=cutoff)
+        )
+        .order_by("-id")
+        .values_list("text", flat=True)
+    )
+
+    headlines: list[str] = []
+    seen: set[str] = set()
+    for text in queryset:
+        headline = _extract_post_headline(text)
+        if not headline:
+            continue
+        if headline in seen:
+            continue
+        seen.add(headline)
+        headlines.append(headline)
+        if len(headlines) >= max_items:
+            break
+    return headlines
+
+
+def _score_similar_texts(candidate: str, existing:
                          
                          
                          
@@ -893,6 +943,8 @@ def _build_user_prompt(
     channel: Channel,
     article: dict[str, Any] | None,
     avoid_texts: list[str] | None = None,
+    *,
+    recent_headlines: Iterable[str] | None = None,
 ) -> str:
     instructions = [
         "Zwróć dokładnie jeden obiekt JSON zawierający pola:",
@@ -902,25 +954,25 @@ def _build_user_prompt(
         (
             "Każdy obiekt media powinien zawierać resolver "
             "(np. twitter/telegram/instagram/rss) oraz reference – obiekt z prawdziwymi"
-            " identyfikatorami źródła (np. {\"tg_post_url\": \"https://t.me/...\"," 
+            " identyfikatorami źródła (np. {\"tg_post_url\": \"https://t.me/...\","
             " \"posted_at\": \"2024-06-09T10:32:00Z\"})."
             "Jeśli jest to strona www, podaj url media zdjęcie/video z artykułu"
         ),
-        (
-            " Jeśli nie masz dopasowanego medium, zwróć pustą listę media."
-        ),
+        (" Jeśli nie masz dopasowanego medium, zwróć pustą listę media."),
         "Pole identyfikator (jeśli użyte) ma zawierać rzeczywistą wartość identyfikatora, a nie nazwę pola ani placeholder.",
+        "Pole reference.source_locator musi zawierać dokładny link lub identyfikator wpisu źródłowego.",
         (
             "Jeśli korzystasz z wpisów Telegram, pamiętaj o zachowaniu sensu i chronologii całego wątku,"
             " aby poprawnie oddać kontekst wydarzeń."
         ),
-
         "Używaj wyłącznie angielskich nazw pól w formacie snake_case (ASCII, bez spacji i znaków diakrytycznych).",
         (
             "Jeśli media pochodzą z artykułu lub innego źródła, dołącz dostępne metadane"
             " (caption (max 20znaków), posted_at, author)."
         ),
         "Pole has_spoiler (true/false) jest opcjonalne i dotyczy wyłącznie zdjęć wymagających ukrycia.",
+        "Treść posta oraz wszystkie media muszą opisywać to samo wydarzenie.",
+        "Nie podawaj bezpośrednich linków w treści posta – linki umieszczaj w polu source lub w mediach.",
     ]
 
     if channel.max_chars:
@@ -928,11 +980,22 @@ def _build_user_prompt(
             "Długość odpowiedzi musi mieścić się w limicie znaków opisanym w poleceniach kanału."
         )
 
+    sources_prompt = _channel_sources_prompt(channel).strip()
+    if sources_prompt:
+        instructions.append(sources_prompt)
 
     article_context = _article_context(article)
     if article_context:
         instructions.append("Korzystaj z poniższych danych artykułu:")
         instructions.append(article_context)
+
+    headline_list = [h for h in (recent_headlines or []) if h]
+    if headline_list:
+        instructions.append(
+            "Unikaj tematów, które pokrywają się z nagłówkami wpisów z ostatnich 24 godzin (opublikowanych i utworzonych):"
+        )
+        for idx, headline in enumerate(headline_list, 1):
+            instructions.append(f"{idx}. {headline}")
 
     avoid = avoid_texts or []
     if avoid:
@@ -1748,9 +1811,15 @@ def gpt_generate_post_payload(channel: Channel, article: dict[str, Any] | None =
     avoid_texts: list[str] = []
     max_attempts = max(int(os.getenv("GPT_DUPLICATE_MAX_ATTEMPTS", 3)), 1)
     similarity_threshold = float(os.getenv("GPT_DUPLICATE_THRESHOLD", 0.9))
+    headlines = _recent_post_headlines(channel)
 
     for attempt in range(1, max_attempts + 1):
-        system_prompt = _build_user_prompt(channel, article, avoid_texts)
+        system_prompt = _build_user_prompt(
+            channel,
+            article,
+            avoid_texts,
+            recent_headlines=headlines,
+        )
         raw = gpt_generate_text(
             system_prompt,
             channel_prompt,
