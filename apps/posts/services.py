@@ -6,8 +6,11 @@ import mimetypes
 import os
 import textwrap
 import uuid
+from html import unescape
+from html.parser import HTMLParser
 from pathlib import Path
 from urllib.parse import urlparse, unquote
+import re
 
 from openai import (
     OpenAI,
@@ -29,8 +32,268 @@ from dateutil import tz
 from typing import Any, Dict, List, Optional, Iterable
 from collections.abc import Mapping
 
+import httpx
+
 
 logger = logging.getLogger(__name__)
+
+
+class _MetaTagParser(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__()
+        self.meta: dict[str, list[str]] = {}
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str | None, str | None]]) -> None:
+        if tag.lower() != "meta":
+            return
+        attr_map: dict[str, str] = {}
+        for key, value in attrs:
+            if not key or value is None:
+                continue
+            attr_map[key.lower()] = value
+        name = attr_map.get("property") or attr_map.get("name")
+        content = attr_map.get("content")
+        if not name or content is None:
+            return
+        bucket = self.meta.setdefault(name.lower(), [])
+        bucket.append(content)
+
+
+def _looks_like_asset(url: str) -> bool:
+    parsed = urlparse(url)
+    if not parsed.scheme or not parsed.scheme.startswith("http"):
+        return False
+    path = parsed.path or ""
+    if not path:
+        return False
+    ext = os.path.splitext(path)[-1].lower()
+    return ext in {
+        ".jpg",
+        ".jpeg",
+        ".png",
+        ".gif",
+        ".mp4",
+        ".mov",
+        ".webm",
+        ".pdf",
+        ".mkv",
+        ".avi",
+    }
+
+
+def _extract_meta_first(meta: dict[str, list[str]], keys: Iterable[str]) -> str:
+    for key in keys:
+        values = meta.get(key.lower())
+        if not values:
+            continue
+        for value in values:
+            candidate = unescape((value or "").strip())
+            if candidate:
+                return candidate
+    return ""
+
+
+def _resolve_media_via_twitter_html(url: str, media_type: str) -> str:
+    timeout_s = float(os.getenv("MEDIA_DOWNLOAD_TIMEOUT", 30))
+    headers = {
+        "User-Agent": os.getenv(
+            "MEDIA_HTML_USER_AGENT",
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+            "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+        )
+    }
+    try:
+        response = httpx.get(url, timeout=timeout_s, follow_redirects=True, headers=headers)
+        response.raise_for_status()
+    except httpx.HTTPStatusError as exc:
+        logger.warning(
+            "Twitter HTML fallback zwrócił HTTP %s dla %s", exc.response.status_code, url
+        )
+        return ""
+    except httpx.RequestError as exc:
+        logger.warning("Twitter HTML fallback błąd sieci dla %s: %s", url, exc)
+        return ""
+
+    parser = _MetaTagParser()
+    try:
+        parser.feed(response.text)
+    except Exception:
+        logger.exception("Nie udało się sparsować odpowiedzi HTML Twitter dla %s", url)
+        return ""
+
+    preferred_keys: list[str] = []
+    if media_type == "video":
+        preferred_keys.extend(
+            [
+                "og:video:url",
+                "og:video:secure_url",
+                "og:video",
+                "twitter:player:stream",
+            ]
+        )
+
+    if media_type in {"photo", "video"}:
+        preferred_keys.extend(["og:image", "og:image:url", "og:image:secure_url"])
+
+    direct_url = _extract_meta_first(parser.meta, preferred_keys)
+    if direct_url and _looks_like_asset(direct_url):
+        return direct_url
+    return ""
+
+
+def _extract_twimg_candidates(text: str) -> list[str]:
+    pattern = re.compile(r"https://[\w.-]*twimg\.com/[^\s\"'<>]+", re.IGNORECASE)
+    candidates: list[str] = []
+    for match in pattern.findall(text):
+        url = unescape(match)
+        if url in candidates:
+            continue
+        candidates.append(url)
+    return candidates
+
+
+def _prefer_photo_url(urls: list[str]) -> str:
+    filtered: list[str] = []
+    for url in urls:
+        lowered = url.lower()
+        if any(skip in lowered for skip in ("profile_images", "semantic_core_img")):
+            continue
+        if any(tag in lowered for tag in ("/media/", "ext_tw_video_thumb", "tweet_video_thumb")):
+            filtered.append(url)
+    if not filtered:
+        for url in urls:
+            lowered = url.lower()
+            if any(skip in lowered for skip in ("profile_images", "semantic_core_img")):
+                continue
+            if "pbs.twimg.com" in lowered:
+                filtered.append(url)
+    if not filtered:
+        return ""
+
+    def _score(name: str) -> int:
+        order = {"orig": 5, "large": 4, "medium": 3, "small": 2, "thumb": 1}
+        return order.get(name.lower(), 0)
+
+    best_url = max(
+        filtered,
+        key=lambda item: (
+            _score(re.search(r"[?&]name=([^&#]+)", item).group(1) if re.search(r"[?&]name=([^&#]+)", item) else ""),
+            len(item),
+        ),
+    )
+    return best_url
+
+
+def _prefer_video_url(urls: list[str]) -> str:
+    filtered: list[str] = []
+    for url in urls:
+        lowered = url.lower()
+        if any(tag in lowered for tag in ("/ext_tw_video/", "tweet_video", "amplify_video")) and "thumb" not in lowered:
+            filtered.append(url)
+    if not filtered:
+        for url in urls:
+            lowered = url.lower()
+            if "ext_tw_video_thumb" in lowered:
+                filtered.append(url)
+    if not filtered:
+        return ""
+
+    def _resolution_score(item: str) -> int:
+        match = re.search(r"/(\d+)x(\d+)/", item)
+        if match:
+            return int(match.group(1)) * int(match.group(2))
+        return len(item)
+
+    return max(filtered, key=_resolution_score)
+
+
+def _resolve_media_via_twstalker(
+    *, username: str, tweet_id: str, media_type: str, resolver: str
+) -> str:
+    if not username or not tweet_id:
+        return ""
+
+    timeout_s = float(os.getenv("MEDIA_DOWNLOAD_TIMEOUT", 30))
+    headers = {
+        "User-Agent": os.getenv(
+            "MEDIA_HTML_USER_AGENT",
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+            "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+        )
+    }
+    url = f"https://www.twstalker.com/{username}/status/{tweet_id}"
+    try:
+        response = httpx.get(url, timeout=timeout_s, headers=headers)
+        response.raise_for_status()
+    except httpx.HTTPStatusError as exc:
+        logger.warning(
+            "TwStalker fallback zwrócił HTTP %s dla %s", exc.response.status_code, url
+        )
+        return ""
+    except httpx.RequestError as exc:
+        logger.warning("TwStalker fallback błąd sieci dla %s: %s", url, exc)
+        return ""
+
+    candidates = _extract_twimg_candidates(response.text)
+    if not candidates:
+        return ""
+    selected = (
+        _prefer_video_url(candidates) if media_type == "video" else _prefer_photo_url(candidates)
+    )
+    if selected:
+        logger.info(
+            "Resolved media via TwStalker fallback %s -> %s (resolver=%s)",
+            url,
+            selected,
+            resolver,
+        )
+    return selected
+
+
+def _resolve_media_via_html_fallback(
+    url: str, media_type: str, resolver: str, reference: Mapping[str, Any] | None = None
+) -> str:
+    parsed = urlparse(url)
+    host = (parsed.hostname or "").lower()
+    if host.endswith("twitter.com") or host.endswith("x.com"):
+        resolved = _resolve_media_via_twitter_html(url, media_type)
+        if resolved:
+            logger.info(
+                "Resolved media via Twitter HTML fallback %s -> %s (resolver=%s)",
+                url,
+                resolved,
+                resolver,
+            )
+            return resolved
+        ref = reference or {}
+        username = ""
+        for key in ("author_username", "user_screen_name", "username", "screen_name"):
+            value = ref.get(key)
+            if isinstance(value, str) and value.strip():
+                username = value.strip()
+                break
+        if not username:
+            segments = [segment for segment in parsed.path.split("/") if segment]
+            if len(segments) >= 2:
+                username = segments[0]
+        tweet_id = ""
+        for key in ("tweet_id", "id", "status_id"):
+            value = ref.get(key)
+            if isinstance(value, str) and value.strip():
+                tweet_id = value.strip()
+                break
+        if not tweet_id:
+            segments = [segment for segment in parsed.path.split("/") if segment]
+            if segments:
+                candidate = segments[-1]
+                tweet_id = candidate.split("?")[0]
+        if username and tweet_id:
+            resolved = _resolve_media_via_twstalker(
+                username=username, tweet_id=tweet_id, media_type=media_type, resolver=resolver
+            )
+            if resolved:
+                return resolved
+    return ""
 
 
 def _serialisable_payload(value: Any) -> Any:
@@ -802,16 +1065,6 @@ def _resolve_media_reference(
     if not resolver or not reference:
         return ""
 
-    def _looks_like_asset(url: str) -> bool:
-        parsed = urlparse(url)
-        if not parsed.scheme.startswith("http"):
-            return False
-        path = parsed.path or ""
-        if not path:
-            return False
-        ext = os.path.splitext(path)[-1].lower()
-        return ext in {".jpg", ".jpeg", ".png", ".gif", ".mp4", ".mov", ".webm", ".pdf", ".mkv", ".avi"}
-
     def _reference_fallback_url() -> str:
         for key in (
             "direct_url",
@@ -851,6 +1104,17 @@ def _resolve_media_reference(
             )
             return fallback_url
         if fallback_url:
+            html_url = _resolve_media_via_html_fallback(
+                fallback_url, media_type, resolver, reference
+            )
+            if html_url:
+                logger.info(
+                    "Brak MEDIA_RESOLVER_URL – pobrano media z fallback HTML %s (resolver=%s, ref=%s)",
+                    fallback_url,
+                    resolver,
+                    reference,
+                )
+                return html_url
             if resolver == "telegram" and fallback_url.startswith(("https://t.me/", "http://t.me/")):
                 logger.info(
                     "Brak MEDIA_RESOLVER_URL – używam adresu Telegram %s (resolver=%s, ref=%s)",
