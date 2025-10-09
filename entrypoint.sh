@@ -1,12 +1,14 @@
 #!/bin/sh
 set -e
 
-python manage.py makemigrations
-python manage.py migrate --noinput
-python manage.py collectstatic --noinput || true
+SERVICE_ROLE="${SERVICE_ROLE:-web}"
 
-if [ -n "$DJANGO_SUPERUSER_EMAIL" ] && [ -n "$DJANGO_SUPERUSER_PASSWORD" ]; then
-  python manage.py shell <<'PY'
+if [ "$SERVICE_ROLE" = "web" ]; then
+  python manage.py migrate --noinput
+  python manage.py collectstatic --noinput || true
+
+  if [ -n "$DJANGO_SUPERUSER_EMAIL" ] && [ -n "$DJANGO_SUPERUSER_PASSWORD" ]; then
+    python manage.py shell <<'PY'
 import os
 from django.contrib.auth import get_user_model
 
@@ -51,6 +53,7 @@ else:
         user.set_password(password)
         user.save()
 PY
+  fi
 fi
 
 exec "$@"
