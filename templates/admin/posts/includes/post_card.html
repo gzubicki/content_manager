@@ -85,6 +85,16 @@
     <div class="post-card__actions">
       <a href="{{ post.change_url }}" class="post-card__action--primary">Edytuj</a>
       <a href="{{ post.rewrite_url }}" class="post-card__action--secondary">GPT: korekta</a>
+      {% if post.publish_now_url %}
+        <button
+          type="submit"
+          formmethod="post"
+          formaction="{{ post.publish_now_url }}"
+          class="post-card__action--primary"
+        >
+          Opublikuj teraz
+        </button>
+      {% endif %}
       {% if post.is_draft and post.approve_url %}
         <button
           type="submit"
