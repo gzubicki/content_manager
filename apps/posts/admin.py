@@ -231,8 +231,24 @@ class PostMediaInline(admin.StackedInline):
 
     existing_file.short_description = "Podgląd"
 
+class ChannelAdminForm(forms.ModelForm):
+    class Meta:
+        model = Channel
+        fields = "__all__"
+        widgets = {
+            "style_prompt": forms.Textarea(
+                attrs={
+                    "rows": 18,
+                    "class": "vLargeTextField channel-style-prompt",
+                    "style": "min-height: 320px; font-family: var(--font-family-monospace, monospace);",
+                }
+            )
+        }
+
+
 @admin.register(Channel)
 class ChannelAdmin(admin.ModelAdmin):
+    form = ChannelAdminForm
     list_display = ("id","name","slug","tg_channel_id","language","draft_target_count")
     search_fields = ("name","slug","tg_channel_id")
     actions = ["act_fill_to_target","act_gpt_fill_missing"]
