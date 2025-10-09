@@ -275,13 +275,24 @@ def _build_user_prompt(
             " identyfikatorami źródła (np. {\"tg_post_url\": \"https://t.me/...\","
             " \"posted_at\": \"2024-06-09T10:32:00Z\"})."
         ),
+        (
+            "Treść posta oraz wszystkie media muszą opisywać to samo wydarzenie lub wpis."
+            " Nie wolno łączyć tekstu z mediami pochodzącymi z innych, niepowiązanych źródeł."
+            " Jeśli nie masz dopasowanego medium, zwróć pustą listę media."
+        ),
         "Pole identyfikator (jeśli użyte) ma zawierać rzeczywistą wartość identyfikatora, a nie nazwę pola ani placeholder.",
         (
             "Jeżeli brak dedykowanych kluczy platformy, ustaw reference.source_locator na"
             " kanoniczny adres strony źródłowej (np. permalink posta lub artykułu),"
             " zamiast podawać bezpośredni link do pliku multimedialnego."
         ),
-        "Nie podawaj bezpośrednich linków do plików multimedialnych.",
+        "Nie podawaj bezpośrednich linków do plików – korzystaj z referencji platformy.",
+        (
+            "Jeśli korzystasz z wpisów Telegram (linki https://t.me/…), potraktuj każdą"
+            " pojedynczą wiadomość jako oddzielne źródło. Użyj jednego konkretnego"
+            " wpisu i zapisz go w reference.tg_post_url zamiast mieszać treści z kilku"
+            " komunikatów."
+        ),
         "Nie dodawaj tekstu poza opisanym obiektem JSON.",
         "Używaj wyłącznie angielskich nazw pól w formacie snake_case (ASCII, bez spacji i znaków diakrytycznych).",
         (
