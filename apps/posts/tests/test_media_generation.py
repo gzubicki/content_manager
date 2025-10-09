@@ -1,5 +1,7 @@
 from unittest.mock import patch
 
+from typing import Any
+
 import tempfile
 import os
 from unittest import mock
@@ -282,6 +284,94 @@ class MediaHandlingTest(TestCase):
         self.assertTrue(kwargs.get("follow_redirects"))
         self.assertIn("headers", kwargs)
         self.assertIn("User-Agent", kwargs["headers"])
+
+    def test_resolve_media_reference_uses_twitter_html_fallback(self) -> None:
+        html_doc = """
+        <html>
+            <head>
+                <meta property="og:image" content="https://pbs.twimg.com/media/test123.jpg?name=large" />
+            </head>
+            <body></body>
+        </html>
+        """
+
+        class _HtmlResponse:
+            def __init__(self, text: str):
+                self.text = text
+
+            def raise_for_status(self) -> None:
+                return None
+
+        tweet_url = "https://x.com/user/status/1234567890"
+        reference = {"tweet_url": tweet_url, "tweet_id": "1234567890"}
+
+        with mock.patch.dict(os.environ, {"MEDIA_RESOLVER_URL": ""}), patch(
+            "apps.posts.services.httpx.get", return_value=_HtmlResponse(html_doc)
+        ) as mock_get:
+            resolved = services._resolve_media_reference(
+                resolver="telegram",
+                reference=reference,
+                media_type="photo",
+                caption="",
+            )
+
+        self.assertEqual(resolved, "https://pbs.twimg.com/media/test123.jpg?name=large")
+        mock_get.assert_called_once()
+        args, kwargs = mock_get.call_args
+        self.assertEqual(args[0], tweet_url)
+        self.assertTrue(kwargs.get("follow_redirects"))
+        self.assertIn("headers", kwargs)
+        self.assertIn("User-Agent", kwargs["headers"])
+
+    def test_resolve_media_reference_uses_twstalker_fallback(self) -> None:
+        tweet_url = "https://x.com/Gerashchenko_en/status/1976168706943181254"
+        twstalker_html = """
+        <html>
+            <body>
+                <a href="https://video-s.twimg.com/ext_tw_video/1976168643214868480/pu/vid/avc1/1280x720/sample.mp4?tag=12">Download Video</a>
+                <img src="https://pbs.twimg.com/ext_tw_video_thumb/1976168643214868480/pu/img/thumb.jpg" />
+            </body>
+        </html>
+        """
+
+        class _HtmlResponse:
+            def __init__(self, text: str):
+                self.text = text
+
+            def raise_for_status(self) -> None:
+                return None
+
+        calls: list[str] = []
+
+        def _fake_get(url: str, *args: Any, **kwargs: Any) -> _HtmlResponse:
+            calls.append(url)
+            if "twstalker" in url:
+                return _HtmlResponse(twstalker_html)
+            return _HtmlResponse("<html><head></head><body></body></html>")
+
+        reference = {
+            "tweet_url": tweet_url,
+            "tweet_id": "1976168706943181254",
+            "author_username": "Gerashchenko_en",
+        }
+
+        with mock.patch.dict(os.environ, {"MEDIA_RESOLVER_URL": ""}), patch(
+            "apps.posts.services.httpx.get", side_effect=_fake_get
+        ):
+            resolved = services._resolve_media_reference(
+                resolver="twitter",
+                reference=reference,
+                media_type="video",
+                caption="",
+            )
+
+        self.assertEqual(
+            resolved,
+            "https://video-s.twimg.com/ext_tw_video/1976168643214868480/pu/vid/avc1/1280x720/sample.mp4?tag=12",
+        )
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(calls[0], tweet_url)
+        self.assertTrue(calls[1].startswith("https://www.twstalker.com/"))
 
     def test_attach_media_removes_when_download_fails(self) -> None:
         payload = [
