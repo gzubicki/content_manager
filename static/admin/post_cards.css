@@ -52,6 +52,30 @@ body.dark-theme .post-card {
   gap: 6px;
 }
 
+.post-card__notice {
+  margin: 0 20px 12px;
+  padding: 10px 14px;
+  border-radius: 10px;
+  font-size: 13px;
+  font-weight: 500;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  line-height: 1.4;
+}
+
+.post-card__notice--pending {
+  background: rgba(250, 204, 21, 0.16);
+  color: #facc15;
+  border: 1px solid rgba(250, 204, 21, 0.35);
+}
+
+.post-card__notice--done {
+  background: rgba(74, 222, 128, 0.18);
+  color: #bbf7d0;
+  border: 1px solid rgba(74, 222, 128, 0.4);
+}
+
 .post-card__channel {
   font-weight: 600;
   display: flex;
