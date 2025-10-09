@@ -173,13 +173,55 @@
   }
 
   function parseExistingDate(dateInput, timeInput){
-    const dateValue = (dateInput.value || "").trim();
-    const timeValue = (timeInput.value || "").trim();
-    if (!dateValue){
+    const rawDate = (dateInput.value || "").trim();
+    const rawTime = (timeInput.value || "").trim();
+    if (!rawDate){
       return null;
     }
-    const timePart = timeValue || "00:00";
-    const candidate = new Date(`${dateValue}T${timePart}`);
+
+    const pad = (num) => String(num).padStart(2, "0");
+
+    let isoDate = "";
+    const isoMatch = rawDate.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+    if (isoMatch){
+      isoDate = `${isoMatch[1]}-${isoMatch[2]}-${isoMatch[3]}`;
+    } else {
+      const plMatch = rawDate.match(/^(\d{1,2})\.(\d{1,2})\.(\d{4})$/);
+      if (plMatch){
+        const day = pad(plMatch[1]);
+        const month = pad(plMatch[2]);
+        const year = plMatch[3];
+        isoDate = `${year}-${month}-${day}`;
+      } else {
+        const parts = rawDate.split(/[^0-9]/).filter(Boolean);
+        if (parts.length === 3){
+          const [a, b, c] = parts;
+          if (a.length === 4){
+            isoDate = `${pad(a)}-${pad(b)}-${pad(c)}`;
+          } else if (c.length === 4){
+            isoDate = `${c}-${pad(b)}-${pad(a)}`;
+          }
+        }
+      }
+    }
+
+    if (!isoDate){
+      return null;
+    }
+
+    let isoTime = "00:00:00";
+    if (rawTime){
+      const timeMatch = rawTime.match(/^(\d{1,2}):(\d{2})(?::(\d{2}))?$/);
+      if (!timeMatch){
+        return null;
+      }
+      const hours = pad(timeMatch[1]);
+      const minutes = pad(timeMatch[2]);
+      const seconds = pad(timeMatch[3] || "0");
+      isoTime = `${hours}:${minutes}:${seconds}`;
+    }
+
+    const candidate = new Date(`${isoDate}T${isoTime}`);
     return Number.isNaN(candidate.getTime()) ? null : candidate;
   }
 
