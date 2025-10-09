@@ -33,6 +33,24 @@ from typing import Any, Dict, List, Optional, Iterable
 logger = logging.getLogger(__name__)
 
 
+def _serialisable_payload(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {k: _serialisable_payload(v) for k, v in value.items() if v is not None}
+    if isinstance(value, list):
+        return [_serialisable_payload(item) for item in value]
+    return value
+
+
+def _log_openai_request(kind: str, payload: dict[str, Any], *, context: dict[str, Any] | None = None) -> None:
+    entry: dict[str, Any] = {"kind": kind, "payload": _serialisable_payload(payload)}
+    if context:
+        entry["context"] = _serialisable_payload(context)
+    try:
+        logger.info("GPT request payload: %s", json.dumps(entry, ensure_ascii=False))
+    except Exception:
+        logger.exception("Nie udało się zserializować payloadu GPT: %s", entry)
+
+
 def _bot_for(channel: Channel):
     token = (channel.bot_token or "").strip()
     if not token:
@@ -939,7 +957,13 @@ def _parse_gpt_payload(raw: str) -> dict[str, Any] | None:
     return payload
 
 
-def gpt_generate_text(system_prompt: str, user_prompt: str, *, response_format: dict[str, Any] | None = None) -> str | None:
+def gpt_generate_text(
+    system_prompt: str,
+    user_prompt: str,
+    *,
+    response_format: dict[str, Any] | None = None,
+    log_context: dict[str, Any] | None = None,
+) -> str | None:
     try:
         cli = _client()
     except RuntimeError as exc:
@@ -948,15 +972,17 @@ def gpt_generate_text(system_prompt: str, user_prompt: str, *, response_format: 
     try:
         model = os.getenv("OPENAI_MODEL", "gpt-4.1")
         temperature = float(os.getenv("OPENAI_TEMPERATURE", 0.2))
+        seed = _openai_seed()
+        context = dict(log_context or {})
 
         use_tools = response_format is None
         if use_tools:
             try:
-                response = cli.responses.create(
-                    model=model,
-                    temperature=temperature,
-                    seed=_openai_seed(),
-                    input=[
+                responses_payload: dict[str, Any] = {
+                    "model": model,
+                    "temperature": temperature,
+                    "seed": seed,
+                    "input": [
                         {
                             "role": "system",
                             "content": [{"type": "text", "text": system_prompt}],
@@ -966,11 +992,13 @@ def gpt_generate_text(system_prompt: str, user_prompt: str, *, response_format: 
                             "content": [{"type": "text", "text": user_prompt}],
                         },
                     ],
-                    tools=[
+                    "tools": [
                         {"type": "web_search"},
                         {"type": "image_generation"},
                     ],
-                )
+                }
+                _log_openai_request("responses.create", responses_payload, context=context)
+                response = cli.responses.create(**responses_payload)
                 text_chunks: list[str] = []
                 output_items = getattr(response, "output", None) or []
                 for item in output_items:
@@ -1007,9 +1035,9 @@ def gpt_generate_text(system_prompt: str, user_prompt: str, *, response_format: 
         }
         if response_format is not None:
             chat_kwargs["response_format"] = response_format
-        seed = _openai_seed()
         if seed is not None:
             chat_kwargs["seed"] = seed
+        _log_openai_request("chat.completions.create", chat_kwargs, context=context)
         chat_response = cli.chat.completions.create(**chat_kwargs)
         return chat_response.choices[0].message.content.strip()
     except RateLimitError as e:
@@ -1034,17 +1062,15 @@ def gpt_generate_post_payload(channel: Channel, article: dict[str, Any] | None =
 
     for attempt in range(1, max_attempts + 1):
         usr = _build_user_prompt(channel, article, avoid_texts)
-        logger.info(
-            "GPT draft request (channel=%s attempt=%s)\nSYSTEM:\n%s\nUSER:\n%s",
-            channel.id,
-            attempt,
-            sys,
-            usr,
-        )
         raw = gpt_generate_text(
             sys,
             usr,
             response_format={"type": "json_object"},
+            log_context={
+                "channel_id": channel.id,
+                "attempt": attempt,
+                "purpose": "draft",
+            },
         )
         if raw is None:
             return None
@@ -1094,7 +1120,14 @@ def gpt_rewrite_text(channel: Channel, text: str, editor_prompt: str) -> str:
         "Zachowaj charakter kanału, wymagania dotyczące długości, emoji oraz stopki opisane w systemowym promptcie."
 
     )
-    rewritten = gpt_generate_text(sys, usr)
+    rewritten = gpt_generate_text(
+        sys,
+        usr,
+        log_context={
+            "channel_id": channel.id,
+            "purpose": "rewrite",
+        },
+    )
     return rewritten or text
 
 
