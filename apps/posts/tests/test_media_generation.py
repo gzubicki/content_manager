@@ -245,6 +245,44 @@ class MediaHandlingTest(TestCase):
 
         self.assertEqual(url, "https://t.me/source/456")
 
+    def test_resolve_media_reference_uses_twitter_html_fallback(self) -> None:
+        html_doc = """
+        <html>
+            <head>
+                <meta property="og:image" content="https://pbs.twimg.com/media/test123.jpg?name=large" />
+            </head>
+            <body></body>
+        </html>
+        """
+
+        class _HtmlResponse:
+            def __init__(self, text: str):
+                self.text = text
+
+            def raise_for_status(self) -> None:
+                return None
+
+        tweet_url = "https://x.com/user/status/1234567890"
+        reference = {"tweet_url": tweet_url, "tweet_id": "1234567890"}
+
+        with mock.patch.dict(os.environ, {"MEDIA_RESOLVER_URL": ""}), patch(
+            "apps.posts.services.httpx.get", return_value=_HtmlResponse(html_doc)
+        ) as mock_get:
+            resolved = services._resolve_media_reference(
+                resolver="telegram",
+                reference=reference,
+                media_type="photo",
+                caption="",
+            )
+
+        self.assertEqual(resolved, "https://pbs.twimg.com/media/test123.jpg?name=large")
+        mock_get.assert_called_once()
+        args, kwargs = mock_get.call_args
+        self.assertEqual(args[0], tweet_url)
+        self.assertTrue(kwargs.get("follow_redirects"))
+        self.assertIn("headers", kwargs)
+        self.assertIn("User-Agent", kwargs["headers"])
+
     def test_attach_media_removes_when_download_fails(self) -> None:
         payload = [
             {"type": "photo", "source_url": "https://example.com/new.jpg"},
