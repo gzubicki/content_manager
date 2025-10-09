@@ -745,22 +745,16 @@ def _build_user_prompt(
             "(np. twitter/telegram/instagram/rss) oraz reference – obiekt z prawdziwymi"
             " identyfikatorami źródła (np. {\"tg_post_url\": \"https://t.me/...\"," 
             " \"posted_at\": \"2024-06-09T10:32:00Z\"})."
+            "Jeśli scrappujesz zwykłą stronę www, postaraj się podać media z artykułu"
         ),
         (
-            "Treść posta oraz wszystkie media muszą opisywać to samo wydarzenie lub wpis."
             " Jeśli nie masz dopasowanego medium, zwróć pustą listę media."
         ),
         "Pole identyfikator (jeśli użyte) ma zawierać rzeczywistą wartość identyfikatora, a nie nazwę pola ani placeholder.",
         (
-            "Jeżeli brak dedykowanych kluczy platformy, ustaw reference.source_locator na"
-            " kanoniczny adres strony źródłowej (np. permalink posta lub artykułu),"
-            " zamiast podawać bezpośredni link do pliku multimedialnego."
-        ),
-        (
             "Jeśli korzystasz z wpisów Telegram, pamiętaj o zachowaniu sensu i chronologii całego wątku,"
             " aby poprawnie oddać kontekst wydarzeń."
         ),
-        "Nie podawaj bezpośrednich linków do plików w treści posta.",
 
         "Używaj wyłącznie angielskich nazw pól w formacie snake_case (ASCII, bez spacji i znaków diakrytycznych).",
         (
