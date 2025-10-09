@@ -911,7 +911,6 @@ class ScheduledPostAdmin(BasePostAdmin):
             status__in=[
                 Post.Status.APPROVED,
                 Post.Status.SCHEDULED,
-                Post.Status.PUBLISHING,
             ],
             scheduled_at__isnull=False,
         )
