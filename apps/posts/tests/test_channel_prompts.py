@@ -40,6 +40,8 @@ class ChannelPromptPropagationTest(TestCase):
         self.assertIn("reference – obiekt z prawdziwymi identyfikatorami", user_prompt)
         self.assertIn("reference.source_locator", user_prompt)
         self.assertIn("angielskich nazw pól", user_prompt)
+        self.assertIn("Treść posta oraz wszystkie media muszą opisywać to samo wydarzenie", user_prompt)
+        self.assertIn("Jeśli korzystasz z wpisów Telegram", user_prompt)
         self.assertIn("Nie podawaj bezpośrednich linków", user_prompt)
         self.assertNotIn("linia1", user_prompt)
         self.assertNotIn("linia2", user_prompt)
