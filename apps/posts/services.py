@@ -27,6 +27,7 @@ from rapidfuzz import fuzz
 from .models import Channel, Post, PostMedia
 from dateutil import tz
 from typing import Any, Dict, List, Optional, Iterable
+from collections.abc import Mapping
 
 
 logger = logging.getLogger(__name__)
@@ -152,15 +153,25 @@ def _client():
 
 def _ensure_internet_tools(payload: dict[str, Any]) -> dict[str, Any]:
     enriched = dict(payload)
-    tools: list[dict[str, Any]] = [dict(tool) for tool in enriched.get("tools", []) or []]
-    has_required_tool = any(tool.get("type") == _REQUIRED_OPENAI_TOOL for tool in tools)
+
+    raw_tools = enriched.get("tools") or []
+    tools: list[dict[str, Any]] = []
+    has_required_tool = False
+    for tool in raw_tools:
+        if isinstance(tool, Mapping):
+            tool_dict = dict(tool)
+            if tool_dict.get("type") == _REQUIRED_OPENAI_TOOL:
+                has_required_tool = True
+            tools.append(tool_dict)
+        else:
+            tools.append(tool)
     if not has_required_tool:
         tools.insert(0, {"type": _REQUIRED_OPENAI_TOOL})
     enriched["tools"] = tools
 
-    tool_choice = enriched.get("tool_choice") or {}
-    if tool_choice.get("type") != "tool" or tool_choice.get("name") != _REQUIRED_OPENAI_TOOL:
-        enriched["tool_choice"] = {"type": "tool", "name": _REQUIRED_OPENAI_TOOL}
+    tool_choice = enriched.get("tool_choice")
+    if not (isinstance(tool_choice, Mapping) and tool_choice.get("type") == _REQUIRED_OPENAI_TOOL):
+        enriched["tool_choice"] = {"type": _REQUIRED_OPENAI_TOOL}
     return enriched
 
 
@@ -1087,11 +1098,11 @@ def gpt_generate_text(
             "input": [
                 {
                     "role": "system",
-                    "content": [{"type": "text", "text": system_prompt}],
+                    "content": [{"type": "input_text", "text": system_prompt}],
                 },
                 {
                     "role": "user",
-                    "content": [{"type": "text", "text": user_prompt}],
+                    "content": [{"type": "input_text", "text": user_prompt}],
                 },
             ],
             "tools": [
@@ -1101,9 +1112,6 @@ def gpt_generate_text(
         }
         if seed is not None:
             responses_payload["seed"] = seed
-        if response_format is not None:
-            responses_payload["response_format"] = response_format
-
         response = _call_openai_responses(cli, responses_payload, context=context)
         combined = _combine_response_text(response)
         if combined:
