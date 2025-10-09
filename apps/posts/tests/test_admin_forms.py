@@ -29,6 +29,7 @@ class PostFormTests(TestCase):
             data={
                 "channel": self.channel.pk,
                 "text": long_text,
+                "source_url": "",
                 "status": Post.Status.DRAFT,
                 "schedule_mode": "AUTO",
             },
@@ -42,12 +43,28 @@ class PostFormTests(TestCase):
             data={
                 "channel": self.channel.pk,
                 "text": "krótki",
+                "source_url": "",
                 "status": Post.Status.DRAFT,
                 "schedule_mode": "AUTO",
             },
             instance=self.post,
         )
         self.assertTrue(form.is_valid())
+
+    def test_source_url_can_be_set_and_is_stripped(self) -> None:
+        form = PostForm(
+            data={
+                "channel": self.channel.pk,
+                "text": "krótki",
+                "source_url": "  https://example.com/artykul  ",
+                "status": Post.Status.DRAFT,
+                "schedule_mode": "AUTO",
+            },
+            instance=self.post,
+        )
+        self.assertTrue(form.is_valid())
+        saved = form.save()
+        self.assertEqual(saved.source_url, "https://example.com/artykul")
 
 
 class RescheduleFormTests(TestCase):

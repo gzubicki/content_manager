@@ -1,8 +1,14 @@
 from unittest.mock import patch
 
+from typing import Any
+
+from typing import Any
+
 import tempfile
 import os
 from unittest import mock
+
+import httpx
 
 from django.test import TestCase, override_settings
 
@@ -283,6 +289,109 @@ class MediaHandlingTest(TestCase):
         self.assertIn("headers", kwargs)
         self.assertIn("User-Agent", kwargs["headers"])
 
+    def test_resolve_media_reference_uses_twstalker_fallback(self) -> None:
+        tweet_url = "https://x.com/Gerashchenko_en/status/1976168706943181254"
+        twstalker_html = """
+        <html>
+            <body>
+                <a href="https://video-s.twimg.com/ext_tw_video/1976168643214868480/pu/vid/avc1/1280x720/sample.mp4?tag=12">Download Video</a>
+                <img src="https://pbs.twimg.com/ext_tw_video_thumb/1976168643214868480/pu/img/thumb.jpg" />
+            </body>
+        </html>
+        """
+
+        class _HtmlResponse:
+            def __init__(self, text: str):
+                self.text = text
+
+            def raise_for_status(self) -> None:
+                return None
+
+        calls: list[str] = []
+
+        def _fake_get(url: str, *args: Any, **kwargs: Any) -> _HtmlResponse:
+            calls.append(url)
+            if "twstalker" in url:
+                return _HtmlResponse(twstalker_html)
+            return _HtmlResponse("<html><head></head><body></body></html>")
+
+        reference = {
+            "tweet_url": tweet_url,
+            "tweet_id": "1976168706943181254",
+            "author_username": "Gerashchenko_en",
+        }
+
+        with mock.patch.dict(os.environ, {"MEDIA_RESOLVER_URL": ""}), patch(
+            "apps.posts.services.httpx.get", side_effect=_fake_get
+        ):
+            resolved = services._resolve_media_reference(
+                resolver="twitter",
+                reference=reference,
+                media_type="video",
+                caption="",
+            )
+
+        self.assertEqual(
+            resolved,
+            "https://video-s.twimg.com/ext_tw_video/1976168643214868480/pu/vid/avc1/1280x720/sample.mp4?tag=12",
+        )
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(calls[0], tweet_url)
+        self.assertTrue(calls[1].startswith("https://www.twstalker.com/"))
+
+    def test_resolve_media_reference_uses_jina_proxy_when_twstalker_forbidden(self) -> None:
+        tweet_url = "https://x.com/Gerashchenko_en/status/1976168706943181254"
+        proxy_html = """
+        <html>
+            <body>
+                <img src="https://pbs.twimg.com/media/sample123.jpg?name=large" />
+            </body>
+        </html>
+        """
+
+        class _HtmlResponse:
+            def __init__(self, text: str):
+                self.text = text
+
+            def raise_for_status(self) -> None:
+                return None
+
+        calls: list[str] = []
+
+        def _fake_get(url: str, *args: Any, **kwargs: Any):
+            calls.append(url)
+            if url == tweet_url:
+                return _HtmlResponse("<html><head></head><body></body></html>")
+            if "twstalker" in url:
+                request = httpx.Request("GET", url)
+                response = httpx.Response(403, request=request)
+                raise httpx.HTTPStatusError("Forbidden", request=request, response=response)
+            if url.startswith("https://r.jina.ai/"):
+                return _HtmlResponse(proxy_html)
+            raise AssertionError(f"Nieoczekiwany URL {url}")
+
+        reference = {
+            "tweet_url": tweet_url,
+            "tweet_id": "1976168706943181254",
+            "author_username": "Gerashchenko_en",
+        }
+
+        with mock.patch.dict(os.environ, {"MEDIA_RESOLVER_URL": ""}), patch(
+            "apps.posts.services.httpx.get", side_effect=_fake_get
+        ):
+            resolved = services._resolve_media_reference(
+                resolver="twitter",
+                reference=reference,
+                media_type="photo",
+                caption="",
+            )
+
+        self.assertEqual(resolved, "https://pbs.twimg.com/media/sample123.jpg?name=large")
+        self.assertEqual(len(calls), 3)
+        self.assertEqual(calls[0], tweet_url)
+        self.assertTrue(calls[1].startswith("https://www.twstalker.com/"))
+        self.assertTrue(calls[2].startswith("https://r.jina.ai/"))
+
     def test_attach_media_removes_when_download_fails(self) -> None:
         payload = [
             {"type": "photo", "source_url": "https://example.com/new.jpg"},
@@ -372,6 +481,7 @@ class ArticleSourceMetadataTest(TestCase):
         self.assertEqual(len(sources), 2)
         self.assertEqual(sources[0]["url"], "https://example.com/artykul-1")
         self.assertEqual(sources[1]["label"], "Raport")
+        self.assertEqual(post.source_url, "https://example.com/artykul-1")
 
     def test_attach_media_preserves_article_metadata(self) -> None:
         post = services.create_post_from_payload(
@@ -388,3 +498,26 @@ class ArticleSourceMetadataTest(TestCase):
         self.assertIn("article", metadata)
         self.assertIn("media", metadata)
         self.assertEqual(metadata["article"]["sources"][0]["url"], "https://example.com/a")
+        self.assertEqual(post.source_url, "https://example.com/a")
+
+    def test_create_post_from_payload_reads_source_from_post_section(self) -> None:
+        payload = {
+            "post": {
+                "text": "Nowy wpis",
+                "source": [
+                    {"link": "https://example.com/artykul-1", "title": "Analiza"},
+                    "https://example.com/artykul-2",
+                ],
+            },
+            "media": [],
+        }
+
+        post = services.create_post_from_payload(self.channel, payload)
+
+        metadata = post.source_metadata
+        self.assertIn("article", metadata)
+        sources = metadata["article"].get("sources", [])
+        self.assertEqual(len(sources), 2)
+        self.assertEqual(sources[0]["label"], "Analiza")
+        self.assertEqual(sources[1]["url"], "https://example.com/artykul-2")
+        self.assertEqual(post.source_url, "https://example.com/artykul-1")

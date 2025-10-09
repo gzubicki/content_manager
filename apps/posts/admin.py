@@ -104,7 +104,7 @@ class RescheduleForm(forms.Form):
 class PostForm(forms.ModelForm):
     class Meta:
         model = Post
-        fields = ["channel","text","status","scheduled_at","schedule_mode"]
+        fields = ["channel", "text", "source_url", "status", "scheduled_at", "schedule_mode"]
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -113,6 +113,10 @@ class PostForm(forms.ModelForm):
             widget = text_field.widget
             widget.attrs.setdefault("data-telegram-editor", "1")
             widget.attrs.setdefault("rows", 14)
+        source_field = self.fields.get("source_url")
+        if source_field:
+            widget = source_field.widget
+            widget.attrs.setdefault("placeholder", "https://...")
 
     def clean(self):
         cleaned = super().clean()
@@ -120,6 +124,10 @@ class PostForm(forms.ModelForm):
         if obj and obj.channel_id:
             validate_post_text_for_channel(obj)
         return cleaned
+
+    def clean_source_url(self) -> str:
+        value = (self.cleaned_data.get("source_url") or "").strip()
+        return value
 
 
 class PostMediaInlineForm(forms.ModelForm):
@@ -480,6 +488,7 @@ class BasePostAdmin(admin.ModelAdmin):
             "scheduled_display": scheduled_display,
             "channel_id": post.channel_id,
             "channel_name": channel_name,
+            "source_url": post.source_url or "",
             "generated_at": timezone.now().isoformat(),
         }
 

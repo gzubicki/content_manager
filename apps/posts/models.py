@@ -86,6 +86,7 @@ class Post(models.Model):
     approved_by = models.ForeignKey("auth.User", verbose_name="Zatwierdził", null=True, blank=True, on_delete=models.SET_NULL)
     dupe_score = models.FloatField("Podobieństwo (duplikat)", null=True, blank=True)
     origin = models.CharField("Pochodzenie", max_length=8, default="gpt")
+    source_url = models.URLField("Źródło treści", max_length=500, blank=True, default="")
     generated_prompt = models.TextField("Prompt generujący", blank=True, default="")
     expires_at = models.DateTimeField("Wygasa", null=True, blank=True)
     message_id = models.BigIntegerField("ID wiadomości (tekst)", null=True, blank=True)

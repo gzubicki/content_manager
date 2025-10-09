@@ -5,12 +5,14 @@ import logging
 import mimetypes
 import os
 import random
+import random
 import textwrap
 import uuid
 from html import unescape
 from html.parser import HTMLParser
 from pathlib import Path
 from urllib.parse import urlparse, unquote
+import re
 
 import httpx
 from openai import (
@@ -32,6 +34,8 @@ from .models import Channel, ChannelSource, Post, PostMedia
 from dateutil import tz
 from typing import Any, Dict, List, Optional, Iterable
 from collections.abc import Mapping
+
+import httpx
 
 import httpx
 
@@ -94,6 +98,41 @@ def _extract_meta_first(meta: dict[str, list[str]], keys: Iterable[str]) -> str:
     return ""
 
 
+def _extract_twitter_media_from_html(html: str, media_type: str) -> str:
+    parser = _MetaTagParser()
+    try:
+        parser.feed(html)
+    except Exception:
+        logger.exception(
+            "Nie udało się przeanalizować dokumentu HTML podczas wyszukiwania mediów Twittera"
+        )
+        parser.meta = {}
+
+    preferred_keys: list[str] = []
+    if media_type == "video":
+        preferred_keys.extend(
+            [
+                "og:video:url",
+                "og:video:secure_url",
+                "og:video",
+                "twitter:player:stream",
+            ]
+        )
+
+    if media_type in {"photo", "video"}:
+        preferred_keys.extend(["og:image", "og:image:url", "og:image:secure_url"])
+
+    direct_url = _extract_meta_first(getattr(parser, "meta", {}), preferred_keys)
+    if direct_url and _looks_like_asset(direct_url):
+        return direct_url
+
+    candidates = _extract_twimg_candidates(html)
+    if not candidates:
+        return ""
+    selected = _prefer_video_url(candidates) if media_type == "video" else _prefer_photo_url(candidates)
+    return selected
+
+
 def _resolve_media_via_twitter_html(url: str, media_type: str) -> str:
     timeout_s = float(os.getenv("MEDIA_DOWNLOAD_TIMEOUT", 30))
     headers = {
@@ -115,34 +154,149 @@ def _resolve_media_via_twitter_html(url: str, media_type: str) -> str:
         logger.warning("Twitter HTML fallback błąd sieci dla %s: %s", url, exc)
         return ""
 
-    parser = _MetaTagParser()
-    try:
-        parser.feed(response.text)
-    except Exception:
-        logger.exception("Nie udało się sparsować odpowiedzi HTML Twitter dla %s", url)
+    return _extract_twitter_media_from_html(response.text, media_type)
+
+
+def _extract_twimg_candidates(text: str) -> list[str]:
+    pattern = re.compile(r"https://[\w.-]*twimg\.com/[^\s\"'<>]+", re.IGNORECASE)
+    candidates: list[str] = []
+    for match in pattern.findall(text):
+        url = unescape(match)
+        if url in candidates:
+            continue
+        candidates.append(url)
+    return candidates
+
+
+def _prefer_photo_url(urls: list[str]) -> str:
+    filtered: list[str] = []
+    for url in urls:
+        lowered = url.lower()
+        if any(skip in lowered for skip in ("profile_images", "semantic_core_img")):
+            continue
+        if any(tag in lowered for tag in ("/media/", "ext_tw_video_thumb", "tweet_video_thumb")):
+            filtered.append(url)
+    if not filtered:
+        for url in urls:
+            lowered = url.lower()
+            if any(skip in lowered for skip in ("profile_images", "semantic_core_img")):
+                continue
+            if "pbs.twimg.com" in lowered:
+                filtered.append(url)
+    if not filtered:
         return ""
 
-    preferred_keys: list[str] = []
-    if media_type == "video":
-        preferred_keys.extend(
-            [
-                "og:video:url",
-                "og:video:secure_url",
-                "og:video",
-                "twitter:player:stream",
-            ]
+    def _score(name: str) -> int:
+        order = {"orig": 5, "large": 4, "medium": 3, "small": 2, "thumb": 1}
+        return order.get(name.lower(), 0)
+
+    best_url = max(
+        filtered,
+        key=lambda item: (
+            _score(re.search(r"[?&]name=([^&#]+)", item).group(1) if re.search(r"[?&]name=([^&#]+)", item) else ""),
+            len(item),
+        ),
+    )
+    return best_url
+
+
+def _prefer_video_url(urls: list[str]) -> str:
+    filtered: list[str] = []
+    for url in urls:
+        lowered = url.lower()
+        if any(tag in lowered for tag in ("/ext_tw_video/", "tweet_video", "amplify_video")) and "thumb" not in lowered:
+            filtered.append(url)
+    if not filtered:
+        for url in urls:
+            lowered = url.lower()
+            if "ext_tw_video_thumb" in lowered:
+                filtered.append(url)
+    if not filtered:
+        return ""
+
+    def _resolution_score(item: str) -> int:
+        match = re.search(r"/(\d+)x(\d+)/", item)
+        if match:
+            return int(match.group(1)) * int(match.group(2))
+        return len(item)
+
+    return max(filtered, key=_resolution_score)
+
+
+def _resolve_media_via_twstalker(
+    *, username: str, tweet_id: str, media_type: str, resolver: str
+) -> str:
+    if not username or not tweet_id:
+        return ""
+
+    timeout_s = float(os.getenv("MEDIA_DOWNLOAD_TIMEOUT", 30))
+    headers = {
+        "User-Agent": os.getenv(
+            "MEDIA_HTML_USER_AGENT",
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+            "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
         )
+    }
+    url = f"https://www.twstalker.com/{username}/status/{tweet_id}"
+    try:
+        response = httpx.get(url, timeout=timeout_s, headers=headers)
+        response.raise_for_status()
+    except httpx.HTTPStatusError as exc:
+        logger.warning(
+            "TwStalker fallback zwrócił HTTP %s dla %s", exc.response.status_code, url
+        )
+        return ""
+    except httpx.RequestError as exc:
+        logger.warning("TwStalker fallback błąd sieci dla %s: %s", url, exc)
+        return ""
 
-    if media_type in {"photo", "video"}:
-        preferred_keys.extend(["og:image", "og:image:url", "og:image:secure_url"])
+    selected = _extract_twitter_media_from_html(response.text, media_type)
+    if selected:
+        logger.info(
+            "Resolved media via TwStalker fallback %s -> %s (resolver=%s)",
+            url,
+            selected,
+            resolver,
+        )
+    return selected
 
-    direct_url = _extract_meta_first(parser.meta, preferred_keys)
-    if direct_url and _looks_like_asset(direct_url):
-        return direct_url
-    return ""
+
+def _resolve_media_via_jina_proxy(url: str, media_type: str, resolver: str) -> str:
+    timeout_s = float(os.getenv("MEDIA_DOWNLOAD_TIMEOUT", 30))
+    headers = {
+        "User-Agent": os.getenv(
+            "MEDIA_HTML_USER_AGENT",
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+            "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+        )
+    }
+    proxied_url = f"https://r.jina.ai/{url}"
+    try:
+        response = httpx.get(proxied_url, timeout=timeout_s, headers=headers)
+        response.raise_for_status()
+    except httpx.HTTPStatusError as exc:
+        logger.warning(
+            "Jina proxy fallback zwrócił HTTP %s dla %s", exc.response.status_code, proxied_url
+        )
+        return ""
+    except httpx.RequestError as exc:
+        logger.warning("Jina proxy fallback błąd sieci dla %s: %s", proxied_url, exc)
+        return ""
+
+    resolved = _extract_twitter_media_from_html(response.text, media_type)
+    if resolved:
+        logger.info(
+            "Resolved media via Jina proxy fallback %s -> %s (resolver=%s)",
+            url,
+            resolved,
+            resolver,
+        )
+    return resolved
 
 
-def _resolve_media_via_html_fallback(url: str, media_type: str, resolver: str) -> str:
+def _resolve_media_via_html_fallback(
+    url: str, media_type: str, resolver: str, reference: Mapping[str, Any] | None = None
+) -> str:
     parsed = urlparse(url)
     host = (parsed.hostname or "").lower()
     if host.endswith("twitter.com") or host.endswith("x.com"):
@@ -154,6 +308,37 @@ def _resolve_media_via_html_fallback(url: str, media_type: str, resolver: str) -
                 resolved,
                 resolver,
             )
+            return resolved
+        ref = reference or {}
+        username = ""
+        for key in ("author_username", "user_screen_name", "username", "screen_name"):
+            value = ref.get(key)
+            if isinstance(value, str) and value.strip():
+                username = value.strip()
+                break
+        if not username:
+            segments = [segment for segment in parsed.path.split("/") if segment]
+            if len(segments) >= 2:
+                username = segments[0]
+        tweet_id = ""
+        for key in ("tweet_id", "id", "status_id"):
+            value = ref.get(key)
+            if isinstance(value, str) and value.strip():
+                tweet_id = value.strip()
+                break
+        if not tweet_id:
+            segments = [segment for segment in parsed.path.split("/") if segment]
+            if segments:
+                candidate = segments[-1]
+                tweet_id = candidate.split("?")[0]
+        if username and tweet_id:
+            resolved = _resolve_media_via_twstalker(
+                username=username, tweet_id=tweet_id, media_type=media_type, resolver=resolver
+            )
+            if resolved:
+                return resolved
+        resolved = _resolve_media_via_jina_proxy(url, media_type, resolver)
+        if resolved:
             return resolved
     return ""
 
@@ -464,9 +649,8 @@ def _channel_sources_prompt(channel: Channel) -> str:
         label = f"{name} – {url}"
 
     lines = [
-        "Preferuj następujące źródło kanału (wybrane losowo według priorytetu):",
-        f"{label} (priorytet {priority})",
-        "W polu source wypisz dokładny permalink wpisu/artykułu wykorzystanego do przygotowania posta.",
+        "Preferowane  źródło:",
+        f"{label}",
     ]
     return "\n".join(lines)
 
@@ -602,22 +786,16 @@ def _build_user_prompt(
             "(np. twitter/telegram/instagram/rss) oraz reference – obiekt z prawdziwymi"
             " identyfikatorami źródła (np. {\"tg_post_url\": \"https://t.me/...\"," 
             " \"posted_at\": \"2024-06-09T10:32:00Z\"})."
+            "Jeśli scrappujesz zwykłą stronę www, postaraj się podać media z artykułu"
         ),
         (
-            "Treść posta oraz wszystkie media muszą opisywać to samo wydarzenie lub wpis."
             " Jeśli nie masz dopasowanego medium, zwróć pustą listę media."
         ),
         "Pole identyfikator (jeśli użyte) ma zawierać rzeczywistą wartość identyfikatora, a nie nazwę pola ani placeholder.",
         (
-            "Jeżeli brak dedykowanych kluczy platformy, ustaw reference.source_locator na"
-            " kanoniczny adres strony źródłowej (np. permalink posta lub artykułu),"
-            " zamiast podawać bezpośredni link do pliku multimedialnego."
-        ),
-        (
             "Jeśli korzystasz z wpisów Telegram, pamiętaj o zachowaniu sensu i chronologii całego wątku,"
             " aby poprawnie oddać kontekst wydarzeń."
         ),
-        "Nie podawaj bezpośrednich linków do plików w treści posta.",
 
         "Używaj wyłącznie angielskich nazw pól w formacie snake_case (ASCII, bez spacji i znaków diakrytycznych).",
         (
@@ -1087,7 +1265,9 @@ def _resolve_media_reference(
             )
             return fallback_url
         if fallback_url:
-            html_url = _resolve_media_via_html_fallback(fallback_url, media_type, resolver)
+            html_url = _resolve_media_via_html_fallback(
+                fallback_url, media_type, resolver, reference
+            )
             if html_url:
                 logger.info(
                     "Brak MEDIA_RESOLVER_URL – pobrano media z fallback HTML %s (resolver=%s, ref=%s)",
@@ -1317,8 +1497,15 @@ def _parse_gpt_payload(raw: str) -> dict[str, Any] | None:
         "media": media,
         "raw_response": cleaned,
     }
+    source_data: Any | None = None
     if "source" in data:
-        payload["source"] = data.get("source")
+        source_data = data.get("source")
+    if source_data is None:
+        post_sources = post_payload.get("source") or post_payload.get("sources")
+        if post_sources:
+            source_data = post_sources
+    if source_data is not None:
+        payload["source"] = source_data
     return payload
 
 
@@ -1799,7 +1986,15 @@ def create_post_from_payload(channel: Channel, payload: dict[str, Any]) -> Post:
         for raw_item in media_items:
             if isinstance(raw_item, dict):
                 source_meta_entries.append(_media_source_snapshot(raw_item))
-    article_sources = _normalise_article_sources(payload.get("source"))
+    raw_article_sources = payload.get("source")
+    if raw_article_sources is None:
+        post_section = payload.get("post")
+        if isinstance(post_section, Mapping):
+            raw_article_sources = post_section.get("source") or post_section.get("sources")
+    article_sources = _normalise_article_sources(raw_article_sources)
+    primary_source_url = ""
+    if article_sources:
+        primary_source_url = str(article_sources[0].get("url") or "").strip()
     metadata: dict[str, Any] = {}
     if article_sources:
         metadata["article"] = {"sources": article_sources}
@@ -1811,6 +2006,7 @@ def create_post_from_payload(channel: Channel, payload: dict[str, Any]) -> Post:
         text=text,
         status="DRAFT",
         origin="gpt",
+        source_url=primary_source_url,
         generated_prompt=raw_payload,
         source_metadata=metadata,
     )

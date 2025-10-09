@@ -48,6 +48,14 @@
     {% if post.approved_by %}
       <div><strong>Zatwierdził:</strong> {{ post.approved_by }}</div>
     {% endif %}
+    {% if post.source_url %}
+      <div>
+        <strong>Źródło:</strong>
+        <a href="{{ post.source_url }}" target="_blank" rel="noopener">
+          {{ post.source_url|truncatechars:80 }}
+        </a>
+      </div>
+    {% endif %}
     {% if post.source_entries %}
       <div class="post-card__sources">
         <strong>Źródła mediów:</strong>
