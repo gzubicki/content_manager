@@ -45,7 +45,7 @@ def task_publish_due():
 async def _publish_async(post: Post):
     bot = services._bot_for(post.channel)
     if bot is None:
-        logger.error(
+        logger.warning(
             "Cannot publish for channel %s (%s): missing bot token. Configure Channel.bot_token to enable publishing.",
             post.channel_id,
             getattr(post.channel, "slug", None),
@@ -136,7 +136,8 @@ def task_gpt_rewrite_post(post_id: int, editor_prompt: str):
     p = Post.objects.select_related("channel").get(id=post_id)
     new_text = services.gpt_rewrite_text(p.channel, p.text, editor_prompt)
     p.text = new_text
-    p.save()
+    services.mark_rewrite_completed(p, auto_save=False)
+    p.save(update_fields=["text", "source_metadata"])
     return p.id
 
 @shared_task(bind=True, rate_limit="1/s",

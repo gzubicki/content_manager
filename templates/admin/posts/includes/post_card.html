@@ -23,6 +23,15 @@
       </div>
     {% endif %}
   </div>
+  {% if post.rewrite_status == 'pending' %}
+    <div class="post-card__notice post-card__notice--pending">
+      ⏳ Korekta GPT w toku — zlecono {{ post.rewrite_requested_display|default:'przed chwilą' }}.
+    </div>
+  {% elif post.rewrite_status == 'completed' %}
+    <div class="post-card__notice post-card__notice--done">
+      ✅ Wpis wrócił z korekty GPT{% if post.rewrite_completed_display %} ({{ post.rewrite_completed_display }}){% endif %}.
+    </div>
+  {% endif %}
   <div class="post-card__preview">
     {% include "partials/telegram_preview.html" with text=post.text media=post.preview_media width='100%' %}
   </div>
