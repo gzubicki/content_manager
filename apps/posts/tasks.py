@@ -2,6 +2,7 @@ import asyncio
 import logging
 
 from celery import shared_task
+from django.db import transaction
 from django.utils import timezone
 from telegram import InputMediaPhoto, InputMediaVideo, InputMediaDocument
 from telegram.error import Forbidden
@@ -39,9 +40,22 @@ def task_housekeeping():
 @shared_task
 def task_publish_due():
     now = timezone.now()
-    due = Post.objects.select_related("channel").filter(status__in=("APPROVED","SCHEDULED"), scheduled_at__lte=now)
-    for p in due:
-        publish_post.delay(p.id)
+    with transaction.atomic():
+        connection = transaction.get_connection()
+        queryset = Post.objects.filter(
+            status__in=(Post.Status.APPROVED, Post.Status.SCHEDULED),
+            scheduled_at__lte=now,
+        )
+        if connection.features.has_select_for_update:
+            select_kwargs = {}
+            if getattr(connection.features, "has_select_for_update_skip_locked", False):
+                select_kwargs["skip_locked"] = True
+            queryset = queryset.select_for_update(**select_kwargs)
+        due_ids = list(queryset.values_list("id", flat=True))
+        if due_ids:
+            Post.objects.filter(id__in=due_ids).update(status=Post.Status.PUBLISHING)
+    for post_id in due_ids:
+        publish_post.delay(post_id)
 
 async def _publish_async(post: Post, medias):
     bot = services._bot_for(post.channel)
@@ -128,9 +142,32 @@ async def _publish_async(post: Post, medias):
         text_message_id = msg.message_id
     return sent_group_ids, text_message_id
 
+def _restore_status_after_failure(post: Post) -> None:
+    if post.scheduled_at:
+        target = Post.Status.SCHEDULED
+    else:
+        target = Post.Status.APPROVED
+    if post.status != target:
+        post.status = target
+        post.save(update_fields=["status"])
+
+
 @shared_task
 def publish_post(post_id: int):
     post = Post.objects.select_related("channel").get(id=post_id)
+    if post.status == Post.Status.PUBLISHED:
+        logger.info("Post %s already published, skipping.", post_id)
+        return None
+    if post.status not in {
+        Post.Status.APPROVED,
+        Post.Status.SCHEDULED,
+        Post.Status.PUBLISHING,
+    }:
+        logger.info("Post %s has status %s, skipping publish.", post_id, post.status)
+        return None
+    if post.status != Post.Status.PUBLISHING:
+        post.status = Post.Status.PUBLISHING
+        post.save(update_fields=["status"])
     medias = list(post.media.all().order_by("order", "id"))
     services.mark_publication_requested(post, auto_save=True)
     coroutine = _publish_async(post, medias)
@@ -138,6 +175,7 @@ def publish_post(post_id: int):
         result = asyncio.run(coroutine)
     except Forbidden as exc:
         coroutine.close()
+        _restore_status_after_failure(post)
         services.mark_publication_failed(post, reason="forbidden")
         logger.error(
             (
@@ -152,6 +190,7 @@ def publish_post(post_id: int):
         )
         return None
     if result is None:
+        _restore_status_after_failure(post)
         services.mark_publication_failed(post, reason="missing_bot")
         return None
     sent_group_ids, msg_id = result
