@@ -842,6 +842,7 @@ def _recent_post_texts(channel: Channel, *, limit: int = 40) -> list[str]:
         Post.Status.DRAFT,
         Post.Status.APPROVED,
         Post.Status.SCHEDULED,
+        Post.Status.PUBLISHING,
         Post.Status.PUBLISHED,
     ]
     queryset = (
@@ -2399,7 +2400,11 @@ def next_auto_slot(channel: Channel, dt=None):
     used_slots = {
         timezone.localtime(dt, tz_waw)
         for dt in channel.posts.filter(
-            status__in=[Post.Status.APPROVED, Post.Status.SCHEDULED],
+            status__in=[
+                Post.Status.APPROVED,
+                Post.Status.SCHEDULED,
+                Post.Status.PUBLISHING,
+            ],
             scheduled_at__isnull=False
         ).values_list("scheduled_at", flat=True)
     }
