@@ -12,7 +12,6 @@ from html import unescape
 from html.parser import HTMLParser
 from pathlib import Path
 from urllib.parse import urlparse, urlunparse, unquote
-from urllib.parse import urlparse, urlunparse, unquote
 import re
 
 import httpx
@@ -127,15 +126,40 @@ def _extract_tweet_details(url: str) -> tuple[str, str, str]:
         return "", "", ""
 
     segments = [segment for segment in (parsed.path or "").split("/") if segment]
+    lower_segments = [segment.lower() for segment in segments]
     username = ""
     candidate = ""
+    system_prefix: list[str] = []
 
-    lower_segments = [segment.lower() for segment in segments]
-    if len(lower_segments) >= 3 and lower_segments[1] == "status":
+    status_index: Optional[int] = None
+    for index, segment in enumerate(lower_segments):
+        if segment == "status" and index + 1 < len(lower_segments):
+            status_index = index
+            break
+
+    if status_index is not None:
+        candidate = segments[status_index + 1]
+        prefix_segments = segments[:status_index]
+        prefix_lower = lower_segments[:status_index]
+        if prefix_segments:
+            potential_username = prefix_segments[-1]
+            potential_lower = prefix_lower[-1]
+            preceding_lower = prefix_lower[-2] if len(prefix_lower) >= 2 else ""
+            if potential_lower != "i" and not (
+                potential_lower == "web" and preceding_lower == "i"
+            ):
+                username = potential_username
+        if not username:
+            if len(prefix_lower) >= 2 and prefix_lower[-2:] == ["i", "web"]:
+                system_prefix = ["i", "web"]
+            elif prefix_lower and prefix_lower[-1] == "i":
+                system_prefix = ["i"]
+    elif len(lower_segments) >= 3 and lower_segments[1] == "status":
         username = segments[0]
         candidate = segments[2]
     elif len(lower_segments) >= 3 and lower_segments[0] == "i" and lower_segments[1] == "status":
         candidate = segments[2]
+        system_prefix = ["i"]
     elif len(lower_segments) >= 2 and lower_segments[-2] == "status":
         if len(segments) >= 3:
             username = segments[-3]
@@ -154,91 +178,10 @@ def _extract_tweet_details(url: str) -> tuple[str, str, str]:
     if username:
         canonical_path = f"/{username}/status/{tweet_id}"
     else:
-        canonical_path = f"/i/status/{tweet_id}"
-
-    canonical = urlunparse(
-        (
-            parsed.scheme or "https",
-            canonical_host,
-            canonical_path,
-            "",
-            "",
-            "",
-        )
-    )
-
-    return canonical, username, tweet_id
-
-
-def _reference_username(reference: Mapping[str, Any]) -> str:
-    for key in ("author_username", "user_screen_name", "username", "screen_name"):
-        value = reference.get(key)
-        if isinstance(value, str) and value.strip():
-            return value.strip()
-    return ""
-
-
-def _canonical_tweet_url(username: str, tweet_id: str) -> str:
-    tweet_id = (tweet_id or "").strip()
-    username = (username or "").strip()
-    if not tweet_id:
-        return ""
-    if username:
-        return f"https://x.com/{username}/status/{tweet_id}"
-    return f"https://x.com/i/status/{tweet_id}"
-
-
-def _is_twitter_host(host: str) -> bool:
-    if not host:
-        return False
-    lowered = host.lower()
-    return lowered.endswith("twitter.com") or lowered.endswith("x.com")
-
-
-def _extract_tweet_details(url: str) -> tuple[str, str, str]:
-    if not isinstance(url, str):
-        return "", "", ""
-    cleaned = url.strip()
-    if not cleaned:
-        return "", "", ""
-    try:
-        parsed = urlparse(cleaned)
-    except Exception:
-        return "", "", ""
-
-    host = parsed.hostname or ""
-    if not _is_twitter_host(host):
-        return "", "", ""
-
-    segments = [segment for segment in (parsed.path or "").split("/") if segment]
-    username = ""
-    candidate = ""
-
-    lower_segments = [segment.lower() for segment in segments]
-    if len(lower_segments) >= 3 and lower_segments[1] == "status":
-        username = segments[0]
-        candidate = segments[2]
-    elif len(lower_segments) >= 3 and lower_segments[0] == "i" and lower_segments[1] == "status":
-        candidate = segments[2]
-    elif len(lower_segments) >= 2 and lower_segments[-2] == "status":
-        if len(segments) >= 3:
-            username = segments[-3]
-        candidate = segments[-1]
-    elif segments:
-        username = segments[0]
-        candidate = segments[-1]
-
-    match = re.search(r"(\d{5,})", candidate or "")
-    tweet_id = match.group(1) if match else ""
-
-    if not tweet_id:
-        return "", username, ""
-
-    canonical_host = "x.com"
-    if username:
-        canonical_path = f"/{username}/status/{tweet_id}"
-    else:
-        canonical_path = f"/i/status/{tweet_id}"
+        if system_prefix:
+            canonical_path = f"/{'/'.join(system_prefix)}/status/{tweet_id}"
+        else:
+            canonical_path = f"/i/status/{tweet_id}"
 
     canonical = urlunparse(
         (

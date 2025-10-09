@@ -4,6 +4,7 @@ import logging
 from celery import shared_task
 from django.utils import timezone
 from telegram import InputMediaPhoto, InputMediaVideo, InputMediaDocument
+from telegram.error import Forbidden
 
 from .models import Post, Channel
 from . import services
@@ -42,7 +43,7 @@ def task_publish_due():
     for p in due:
         publish_post.delay(p.id)
 
-async def _publish_async(post: Post):
+async def _publish_async(post: Post, medias):
     bot = services._bot_for(post.channel)
     if bot is None:
         logger.warning(
@@ -52,14 +53,20 @@ async def _publish_async(post: Post):
         )
         return None
     chat = post.channel.tg_channel_id
-    medias = list(post.media.all().order_by("order", "id"))
     sent_group_ids = []
+    text_message_id = None
+    post_text = post.text or ""
+    text_has_content = bool(post_text.strip())
+    caption_text = ""
+    if text_has_content and len(post_text) <= 1024:
+        caption_text = post_text
+    send_text_separately = text_has_content and not caption_text
     if medias:
         im = []
         opened_files = []
         media_records = []
         try:
-            for m in medias:
+            for index, m in enumerate(medias):
                 media = m.tg_file_id
                 if not media:
                     cache_path = m.cache_path
@@ -70,18 +77,35 @@ async def _publish_async(post: Post):
                         opened_files.append(media)
                 if not media:
                     continue
+                caption_kwargs = {}
+                if index == 0 and caption_text:
+                    caption_kwargs["caption"] = caption_text
                 if m.type == "photo":
-                    im.append(InputMediaPhoto(media=media, has_spoiler=m.has_spoiler))
+                    im.append(
+                        InputMediaPhoto(
+                            media=media,
+                            has_spoiler=m.has_spoiler,
+                            **caption_kwargs,
+                        )
+                    )
                 elif m.type == "video":
-                    im.append(InputMediaVideo(media=media, has_spoiler=m.has_spoiler))
+                    im.append(
+                        InputMediaVideo(
+                            media=media,
+                            has_spoiler=m.has_spoiler,
+                            **caption_kwargs,
+                        )
+                    )
                 elif m.type == "doc":
-                    im.append(InputMediaDocument(media=media))
+                    im.append(InputMediaDocument(media=media, **caption_kwargs))
                 else:
                     continue
                 media_records.append(m)
             if im:
                 res = await bot.send_media_group(chat_id=chat, media=im)
                 sent_group_ids = [r.message_id for r in res]
+                if caption_text and sent_group_ids:
+                    text_message_id = sent_group_ids[0]
                 for record, message in zip(media_records, res):
                     file_id = None
                     if record.type == "photo" and getattr(message, "photo", None):
@@ -92,23 +116,44 @@ async def _publish_async(post: Post):
                         file_id = message.document.file_id
                     if file_id and record.tg_file_id != file_id:
                         record.tg_file_id = file_id
-                        record.save(update_fields=["tg_file_id"])
+                        await asyncio.to_thread(record.save, update_fields=["tg_file_id"])
         finally:
             for fh in opened_files:
                 try:
                     fh.close()
                 except Exception:
                     pass
-    msg = await bot.send_message(chat_id=chat, text=post.text)
-    return sent_group_ids, msg.message_id
+    if not medias or send_text_separately:
+        msg = await bot.send_message(chat_id=chat, text=post_text)
+        text_message_id = msg.message_id
+    return sent_group_ids, text_message_id
 
 @shared_task
 def publish_post(post_id: int):
     post = Post.objects.select_related("channel").get(id=post_id)
-    result = asyncio.run(_publish_async(post))
+    medias = list(post.media.all().order_by("order", "id"))
+    coroutine = _publish_async(post, medias)
+    try:
+        result = asyncio.run(coroutine)
+    except Forbidden as exc:
+        coroutine.close()
+        logger.error(
+            (
+                "Cannot publish post %s to channel %s (%s): %s. "
+                "Add the bot to the channel and grant permission to post."
+            ),
+            post.id,
+            post.channel_id,
+            getattr(post.channel, "slug", None) or post.channel.tg_channel_id,
+            exc,
+            exc_info=exc,
+        )
+        return None
     if result is None:
         return None
     sent_group_ids, msg_id = result
+    if msg_id is None and sent_group_ids:
+        msg_id = sent_group_ids[0]
     post.message_id = msg_id
     post.dupe_score = services.compute_dupe(post)
     post.status = "PUBLISHED"

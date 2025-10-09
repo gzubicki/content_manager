@@ -655,6 +655,7 @@ class BasePostAdmin(admin.ModelAdmin):
                     post.reschedule_url = self._object_url(post, "reschedule")
                     post.rewrite_url = self._object_url(post, "rewrite")
                     post.approve_url = self.get_approve_url(post)
+                    post.publish_now_url = self.get_publish_now_url(post)
                     post.is_draft = post.status == Post.Status.DRAFT
                     metadata = post.source_metadata if isinstance(getattr(post, "source_metadata", {}), dict) else {}
                     post.source_entries = metadata.get("media", []) if isinstance(metadata, dict) else []
@@ -672,6 +673,9 @@ class BasePostAdmin(admin.ModelAdmin):
         return response
 
     def get_approve_url(self, post):
+        return None
+
+    def get_publish_now_url(self, post):
         return None
 
     def get_urls(self):
@@ -880,12 +884,55 @@ class ScheduledPostAdmin(BasePostAdmin):
     actions = ["act_schedule","act_publish_now","act_delete"]
     ordering = ("scheduled_at",)
     date_hierarchy = "scheduled_at"
+    publish_now_action = "publish_now"
+    publish_now_path = "<int:object_id>/publish-now/"
 
     def filter_queryset(self, qs):
         return qs.filter(
             status__in=[Post.Status.APPROVED, Post.Status.SCHEDULED],
             scheduled_at__isnull=False,
         )
+
+    def get_publish_now_url(self, post):
+        return self._object_url(post, self.publish_now_action)
+
+    def get_urls(self):
+        urls = super().get_urls()
+        opts = self.model._meta
+        custom = [
+            path(
+                self.publish_now_path,
+                self.admin_site.admin_view(self.publish_now_view),
+                name=f"{opts.app_label}_{opts.model_name}_{self.publish_now_action}",
+            ),
+        ]
+        return custom + urls
+
+    def publish_now_view(self, request, object_id):
+        post = get_object_or_404(self.model, pk=object_id)
+        if not self.has_change_permission(request, post):
+            raise PermissionDenied
+
+        if request.method != "POST":
+            return redirect(self._changelist_url())
+
+        if post.status not in {Post.Status.APPROVED, Post.Status.SCHEDULED}:
+            self.message_user(
+                request,
+                "Ten wpis nie może być teraz opublikowany.",
+                level=messages.WARNING,
+            )
+            return redirect(self._changelist_url())
+
+        from .tasks import publish_post
+
+        publish_post.delay(post.id)
+        self.message_user(
+            request,
+            "Zlecono natychmiastową publikację wpisu.",
+            level=messages.SUCCESS,
+        )
+        return redirect(self._changelist_url())
 
 
 @admin.register(PostMedia)

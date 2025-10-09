@@ -71,9 +71,6 @@ class MediaHandlingTest(TestCase):
         self.assertEqual(
             twitter_item["reference"].get("tweet_url"), "https://x.com/i/status/12345"
         )
-        self.assertEqual(
-            twitter_item["reference"].get("tweet_url"), "https://x.com/i/status/12345"
-        )
         self.assertEqual(twitter_item["posted_at"], "2025-01-01T12:00:00Z")
         telegram_item = result[1]
         self.assertEqual(telegram_item["resolver"], "telegram")
@@ -161,6 +158,24 @@ class MediaHandlingTest(TestCase):
         self.assertEqual(canonical, "")
         self.assertEqual(username, "")
         self.assertEqual(tweet_id, "")
+
+    def test_extract_tweet_details_handles_i_web_status_links(self) -> None:
+        canonical, username, tweet_id = services._extract_tweet_details(
+            "https://twitter.com/i/web/status/1234567890123456789"
+        )
+
+        self.assertEqual(canonical, "https://x.com/i/web/status/1234567890123456789")
+        self.assertEqual(username, "")
+        self.assertEqual(tweet_id, "1234567890123456789")
+
+    def test_extract_tweet_details_preserves_real_user_named_web(self) -> None:
+        canonical, username, tweet_id = services._extract_tweet_details(
+            "https://twitter.com/Web/status/9876543210987654321"
+        )
+
+        self.assertEqual(canonical, "https://x.com/Web/status/9876543210987654321")
+        self.assertEqual(username, "Web")
+        self.assertEqual(tweet_id, "9876543210987654321")
 
     def test_attach_media_from_payload_skips_items_without_url(self) -> None:
         PostMedia.objects.create(post=self.post, type="photo", source_url="https://old.example/a.jpg")
