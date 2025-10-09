@@ -1,5 +1,6 @@
 import asyncio
 import logging
+from typing import Any
 
 from celery import shared_task
 from django.db import transaction
@@ -226,6 +227,18 @@ def task_gpt_generate_for_channel(self, channel_id: int, count: int = 1):
         services.create_post_from_payload(ch, payload)
         added += 1
     return added
+
+@shared_task(bind=True,
+             autoretry_for=(APIError, APIConnectionError, APITimeoutError, RateLimitError),
+             retry_backoff=True, retry_jitter=True,
+             retry_kwargs={"max_retries": 6})
+def task_gpt_generate_from_article(self, channel_id: int, article: dict[str, Any] | None = None):
+    ch = Channel.objects.get(id=channel_id)
+    payload = services.gpt_generate_post_payload(ch, article=article)
+    if payload is None:
+        return 0
+    services.create_post_from_payload(ch, payload)
+    return 1
 
 @shared_task
 def task_gpt_rewrite_post(post_id: int, editor_prompt: str):

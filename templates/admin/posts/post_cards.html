@@ -6,6 +6,17 @@
   <link rel="stylesheet" href="{% static 'admin/post_cards.css' %}">
 {% endblock %}
 
+{% block object-tools-items %}
+  {{ block.super }}
+  {% if has_add_permission %}
+    {% if gpt_article_url %}
+      <li><a href="{{ gpt_article_url }}" class="addlink">Dodaj z GPT</a></li>
+    {% elif opts.app_label == 'posts' and opts.model_name == 'draftpost' %}
+      <li><a href="{% url 'admin:posts_draftpost_gpt_article' %}" class="addlink">Dodaj z GPT</a></li>
+    {% endif %}
+  {% endif %}
+{% endblock %}
+
 {% block extrahead %}
   {{ block.super }}
   <script src="{% static 'admin/post_cards.js' %}" defer></script>
