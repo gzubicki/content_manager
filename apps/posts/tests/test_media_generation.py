@@ -462,6 +462,7 @@ class ArticleSourceMetadataTest(TestCase):
         self.assertEqual(len(sources), 2)
         self.assertEqual(sources[0]["url"], "https://example.com/artykul-1")
         self.assertEqual(sources[1]["label"], "Raport")
+        self.assertEqual(post.source_url, "https://example.com/artykul-1")
 
     def test_attach_media_preserves_article_metadata(self) -> None:
         post = services.create_post_from_payload(
@@ -478,6 +479,7 @@ class ArticleSourceMetadataTest(TestCase):
         self.assertIn("article", metadata)
         self.assertIn("media", metadata)
         self.assertEqual(metadata["article"]["sources"][0]["url"], "https://example.com/a")
+        self.assertEqual(post.source_url, "https://example.com/a")
 
     def test_create_post_from_payload_reads_source_from_post_section(self) -> None:
         payload = {
@@ -499,3 +501,4 @@ class ArticleSourceMetadataTest(TestCase):
         self.assertEqual(len(sources), 2)
         self.assertEqual(sources[0]["label"], "Analiza")
         self.assertEqual(sources[1]["url"], "https://example.com/artykul-2")
+        self.assertEqual(post.source_url, "https://example.com/artykul-1")
