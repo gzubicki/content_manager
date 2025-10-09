@@ -4,6 +4,7 @@ import logging
 from celery import shared_task
 from django.utils import timezone
 from telegram import InputMediaPhoto, InputMediaVideo, InputMediaDocument
+from telegram.error import Forbidden
 
 from .models import Post, Channel
 from . import services
@@ -105,7 +106,23 @@ async def _publish_async(post: Post, medias):
 def publish_post(post_id: int):
     post = Post.objects.select_related("channel").get(id=post_id)
     medias = list(post.media.all().order_by("order", "id"))
-    result = asyncio.run(_publish_async(post, medias))
+    coroutine = _publish_async(post, medias)
+    try:
+        result = asyncio.run(coroutine)
+    except Forbidden as exc:
+        coroutine.close()
+        logger.error(
+            (
+                "Cannot publish post %s to channel %s (%s): %s. "
+                "Add the bot to the channel and grant permission to post."
+            ),
+            post.id,
+            post.channel_id,
+            getattr(post.channel, "slug", None) or post.channel.tg_channel_id,
+            exc,
+            exc_info=exc,
+        )
+        return None
     if result is None:
         return None
     sent_group_ids, msg_id = result

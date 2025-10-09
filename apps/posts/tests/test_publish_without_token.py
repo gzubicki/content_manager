@@ -5,6 +5,7 @@ from django.utils import timezone
 
 from apps.posts import tasks
 from apps.posts.models import Channel, Post
+from telegram.error import Forbidden
 
 
 class PublishWithoutTokenTest(TestCase):
@@ -30,6 +31,34 @@ class PublishWithoutTokenTest(TestCase):
         bot_cls.assert_not_called()
         mock_compute.assert_not_called()
         mock_warning.assert_called_once()
+
+        post.refresh_from_db()
+        self.assertEqual(post.status, "SCHEDULED")
+        self.assertIsNone(post.message_id)
+        self.assertIsNone(result)
+
+    def test_publish_logs_forbidden(self):
+        channel = Channel.objects.create(
+            name="Test channel",
+            slug="test",
+            tg_channel_id="@test",
+            bot_token="123",
+        )
+        post = Post.objects.create(
+            channel=channel,
+            text="Hello world",
+            status="SCHEDULED",
+            scheduled_at=timezone.now(),
+        )
+
+        with patch("apps.posts.tasks.asyncio.run", side_effect=Forbidden("nope")) as mock_run, \
+             patch("apps.posts.tasks.logger.error") as mock_error, \
+             patch("apps.posts.tasks.services.compute_dupe") as mock_compute:
+            result = tasks.publish_post(post.id)
+
+        mock_run.assert_called_once()
+        mock_compute.assert_not_called()
+        mock_error.assert_called_once()
 
         post.refresh_from_db()
         self.assertEqual(post.status, "SCHEDULED")
