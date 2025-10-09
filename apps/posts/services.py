@@ -4,8 +4,11 @@ import json
 import logging
 import mimetypes
 import os
+import random
 import textwrap
 import uuid
+from html import unescape
+from html.parser import HTMLParser
 from pathlib import Path
 from urllib.parse import urlparse, unquote
 
@@ -25,12 +28,152 @@ from django.utils.formats import date_format
 from django.conf import settings
 from telegram import Bot
 from rapidfuzz import fuzz
-from .models import Channel, Post, PostMedia
+from .models import Channel, ChannelSource, Post, PostMedia
 from dateutil import tz
 from typing import Any, Dict, List, Optional, Iterable
+from collections.abc import Mapping
+
+import httpx
 
 
 logger = logging.getLogger(__name__)
+
+
+class _MetaTagParser(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__()
+        self.meta: dict[str, list[str]] = {}
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str | None, str | None]]) -> None:
+        if tag.lower() != "meta":
+            return
+        attr_map: dict[str, str] = {}
+        for key, value in attrs:
+            if not key or value is None:
+                continue
+            attr_map[key.lower()] = value
+        name = attr_map.get("property") or attr_map.get("name")
+        content = attr_map.get("content")
+        if not name or content is None:
+            return
+        bucket = self.meta.setdefault(name.lower(), [])
+        bucket.append(content)
+
+
+def _looks_like_asset(url: str) -> bool:
+    parsed = urlparse(url)
+    if not parsed.scheme or not parsed.scheme.startswith("http"):
+        return False
+    path = parsed.path or ""
+    if not path:
+        return False
+    ext = os.path.splitext(path)[-1].lower()
+    return ext in {
+        ".jpg",
+        ".jpeg",
+        ".png",
+        ".gif",
+        ".mp4",
+        ".mov",
+        ".webm",
+        ".pdf",
+        ".mkv",
+        ".avi",
+    }
+
+
+def _extract_meta_first(meta: dict[str, list[str]], keys: Iterable[str]) -> str:
+    for key in keys:
+        values = meta.get(key.lower())
+        if not values:
+            continue
+        for value in values:
+            candidate = unescape((value or "").strip())
+            if candidate:
+                return candidate
+    return ""
+
+
+def _resolve_media_via_twitter_html(url: str, media_type: str) -> str:
+    timeout_s = float(os.getenv("MEDIA_DOWNLOAD_TIMEOUT", 30))
+    headers = {
+        "User-Agent": os.getenv(
+            "MEDIA_HTML_USER_AGENT",
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+            "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+        )
+    }
+    try:
+        response = httpx.get(url, timeout=timeout_s, follow_redirects=True, headers=headers)
+        response.raise_for_status()
+    except httpx.HTTPStatusError as exc:
+        logger.warning(
+            "Twitter HTML fallback zwrócił HTTP %s dla %s", exc.response.status_code, url
+        )
+        return ""
+    except httpx.RequestError as exc:
+        logger.warning("Twitter HTML fallback błąd sieci dla %s: %s", url, exc)
+        return ""
+
+    parser = _MetaTagParser()
+    try:
+        parser.feed(response.text)
+    except Exception:
+        logger.exception("Nie udało się sparsować odpowiedzi HTML Twitter dla %s", url)
+        return ""
+
+    preferred_keys: list[str] = []
+    if media_type == "video":
+        preferred_keys.extend(
+            [
+                "og:video:url",
+                "og:video:secure_url",
+                "og:video",
+                "twitter:player:stream",
+            ]
+        )
+
+    if media_type in {"photo", "video"}:
+        preferred_keys.extend(["og:image", "og:image:url", "og:image:secure_url"])
+
+    direct_url = _extract_meta_first(parser.meta, preferred_keys)
+    if direct_url and _looks_like_asset(direct_url):
+        return direct_url
+    return ""
+
+
+def _resolve_media_via_html_fallback(url: str, media_type: str, resolver: str) -> str:
+    parsed = urlparse(url)
+    host = (parsed.hostname or "").lower()
+    if host.endswith("twitter.com") or host.endswith("x.com"):
+        resolved = _resolve_media_via_twitter_html(url, media_type)
+        if resolved:
+            logger.info(
+                "Resolved media via Twitter HTML fallback %s -> %s (resolver=%s)",
+                url,
+                resolved,
+                resolver,
+            )
+            return resolved
+    return ""
+
+
+def _serialisable_payload(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {k: _serialisable_payload(v) for k, v in value.items() if v is not None}
+    if isinstance(value, list):
+        return [_serialisable_payload(item) for item in value]
+    return value
+
+
+def _log_openai_request(kind: str, payload: dict[str, Any], *, context: dict[str, Any] | None = None) -> None:
+    entry: dict[str, Any] = {"kind": kind, "payload": _serialisable_payload(payload)}
+    if context:
+        entry["context"] = _serialisable_payload(context)
+    try:
+        logger.info("GPT request payload: %s", json.dumps(entry, ensure_ascii=False))
+    except Exception:
+        logger.exception("Nie udało się zserializować payloadu GPT: %s", entry)
 
 
 def _bot_for(channel: Channel):
@@ -39,7 +182,7 @@ def _bot_for(channel: Channel):
         return None
     return Bot(token=token)
 
-_oai = None
+_oai: OpenAI | None = None
 _OPENAI_SEED: Optional[int] = None
 
 _SUPPORTED_MEDIA_TYPES = {"photo", "video", "doc"}
@@ -81,6 +224,9 @@ _IDENTIFIER_KEY_ALIASES = {
     "source locator": "source_locator",
 }
 
+_REQUIRED_OPENAI_TOOL = "web_search"
+_OPTIONAL_OPENAI_TOOLS = {"image_generation"}
+
 
 def _client():
     global _oai
@@ -88,10 +234,132 @@ def _client():
         key = os.getenv("OPENAI_API_KEY", "")
         if not key:
             raise RuntimeError("Brak OPENAI_API_KEY – drafty wymagają GPT.")
-        timeout_s = float(os.getenv("OPENAI_TIMEOUT", 60))
-        max_retries = int(os.getenv("OPENAI_MAX_RETRIES", 0))
-        _oai = OpenAI(api_key=key, max_retries=max_retries, timeout=timeout_s)
+        timeout_default = 60.0
+        try:
+            timeout_s = float(os.getenv("OPENAI_TIMEOUT", timeout_default))
+        except (TypeError, ValueError):
+            logger.warning("OPENAI_TIMEOUT musi być liczbą – używam wartości domyślnej %.1f", timeout_default)
+            timeout_s = timeout_default
+
+        try:
+            max_retries_raw = os.getenv("OPENAI_MAX_RETRIES", "0")
+            max_retries = int(str(max_retries_raw).strip() or 0)
+        except ValueError:
+            logger.warning("OPENAI_MAX_RETRIES musi być liczbą całkowitą – ustawiam 0")
+            max_retries = 0
+        if max_retries < 0:
+            logger.warning("OPENAI_MAX_RETRIES nie może być ujemne – ustawiam 0")
+            max_retries = 0
+
+        if timeout_s <= 0:
+            logger.warning("OPENAI_TIMEOUT musi być dodatnie – używam wartości domyślnej %.1f", timeout_default)
+            timeout_s = timeout_default
+
+        client_kwargs: dict[str, Any] = {
+            "timeout": timeout_s,
+            "max_retries": max_retries,
+        }
+
+        base_url = os.getenv("OPENAI_BASE_URL", "").strip()
+        if base_url:
+            client_kwargs["base_url"] = base_url
+
+        organization = os.getenv("OPENAI_ORG", "").strip() or os.getenv("OPENAI_ORGANIZATION", "").strip()
+        if organization:
+            client_kwargs["organization"] = organization
+
+        project = os.getenv("OPENAI_PROJECT", "").strip()
+        if project:
+            client_kwargs["project"] = project
+
+        _oai = OpenAI(**client_kwargs)
     return _oai
+
+
+def _ensure_internet_tools(payload: dict[str, Any]) -> dict[str, Any]:
+    enriched = dict(payload)
+
+    raw_tools = enriched.get("tools") or []
+    tools: list[dict[str, Any]] = []
+    has_required_tool = False
+    for tool in raw_tools:
+        if isinstance(tool, Mapping):
+            tool_dict = dict(tool)
+            if tool_dict.get("type") == _REQUIRED_OPENAI_TOOL:
+                has_required_tool = True
+            tools.append(tool_dict)
+        else:
+            tools.append(tool)
+    if not has_required_tool:
+        tools.insert(0, {"type": _REQUIRED_OPENAI_TOOL})
+    enriched["tools"] = tools
+
+    tool_choice = enriched.get("tool_choice")
+    if not (isinstance(tool_choice, Mapping) and tool_choice.get("type") == _REQUIRED_OPENAI_TOOL):
+        enriched["tool_choice"] = {"type": _REQUIRED_OPENAI_TOOL}
+    return enriched
+
+
+def _responses_payload_variants(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    primary = _ensure_internet_tools(payload)
+    variants: list[dict[str, Any]] = [primary]
+
+    tools = primary.get("tools", [])
+    fallback_tools = [tool for tool in tools if tool.get("type") not in _OPTIONAL_OPENAI_TOOLS]
+    if fallback_tools and len(fallback_tools) != len(tools):
+        fallback_payload = dict(primary)
+        fallback_payload["tools"] = fallback_tools
+        variants.append(fallback_payload)
+    return variants
+
+
+def _call_openai_responses(client: OpenAI, payload: dict[str, Any], *, context: dict[str, Any] | None = None):
+    variants = _responses_payload_variants(payload)
+    last_error: BadRequestError | None = None
+    for attempt, attempt_payload in enumerate(variants, start=1):
+        attempt_context = dict(context or {})
+        attempt_context.setdefault("internet_enforced", True)
+        attempt_context["internet_attempt"] = attempt
+        _log_openai_request("responses.create", attempt_payload, context=attempt_context)
+        try:
+            return client.responses.create(**attempt_payload)
+        except BadRequestError as exc:
+            last_error = exc
+            message = str(exc)
+            if _REQUIRED_OPENAI_TOOL in message:
+                logger.error(
+                    "Model %s nie wspiera narzędzia %s – wybierz model z dostępem do internetu.",
+                    attempt_payload.get("model"),
+                    _REQUIRED_OPENAI_TOOL,
+                )
+                raise
+            if attempt < len(variants):
+                logger.warning(
+                    "Model %s odrzucił dodatkowe narzędzia (%s) – próbuję ponownie z minimalnym zestawem.",
+                    attempt_payload.get("model"),
+                    message,
+                )
+            else:
+                raise
+    if last_error is not None:
+        raise last_error
+    raise RuntimeError("Brak wariantów zapytania do OpenAI.")
+
+
+def _combine_response_text(response: Any) -> str:
+    text_chunks: list[str] = []
+    output_items = getattr(response, "output", None) or []
+    for item in output_items:
+        content = getattr(item, "content", None) or []
+        for part in content:
+            text = getattr(part, "text", None)
+            if text:
+                text_chunks.append(text)
+    if not text_chunks:
+        fallback_text = getattr(response, "output_text", None)
+        if isinstance(fallback_text, str) and fallback_text.strip():
+            text_chunks.append(fallback_text.strip())
+    return "\n".join(chunk.strip() for chunk in text_chunks if chunk).strip()
 
 
 def _openai_seed() -> Optional[int]:
@@ -142,6 +410,65 @@ def _channel_system_prompt(channel: Channel) -> str:
     if rules:
         return f"{base}\n\nWytyczne kanału:\n{rules}"
     return base
+
+
+def _select_channel_sources(
+    channel: Channel,
+    *,
+    limit: int = 3,
+    rng: random.Random | None = None,
+) -> list[ChannelSource]:
+    try:
+        manager = channel.sources
+    except AttributeError:
+        return []
+
+    queryset = manager.filter(is_active=True)
+    sources = [
+        source
+        for source in queryset
+        if isinstance(source.url, str) and source.url.strip()
+    ]
+    if not sources or limit <= 0:
+        return []
+
+    pool = list(sources)
+    weights = [max(int(getattr(item, "priority", 1) or 0), 0) for item in pool]
+    rng = rng or random
+    selected: list[ChannelSource] = []
+    total = min(limit, len(pool))
+    for _ in range(total):
+        if not pool:
+            break
+        if not any(weights):
+            weights = [1 for _ in pool]
+        choice = rng.choices(pool, weights=weights, k=1)[0]
+        idx = pool.index(choice)
+        selected.append(choice)
+        pool.pop(idx)
+        weights.pop(idx)
+    return selected
+
+
+def _channel_sources_prompt(channel: Channel) -> str:
+    selected = _select_channel_sources(channel, limit=1)
+    if not selected:
+        return ""
+
+    source = selected[0]
+    name = (source.name or "").strip()
+    url = (source.url or "").strip()
+    priority = getattr(source, "priority", 0)
+    label = url
+    if name:
+        label = f"{name} – {url}"
+
+    lines = [
+        "Preferuj następujące źródło kanału (wybrane losowo według priorytetu):",
+        f"{label} (priorytet {priority})",
+        "W polu source wypisz dokładny permalink wpisu/artykułu wykorzystanego do przygotowania posta.",
+    ]
+    return "\n".join(lines)
 
 
 def _article_context(article: dict[str, Any] | None) -> str:
@@ -268,16 +595,16 @@ def _build_user_prompt(
     instructions = [
         "Zwróć dokładnie jeden obiekt JSON zawierający pola:",
         "- post: obiekt z polem text zawierającym gotową treść posta zgodną z zasadami kanału;",
+        "- source: zródła na których oparłeś artykuł, powienien tu być dokładny link wpisu/artykułu;",
         "- media: lista 0-5 obiektów opisujących multimedia do posta.",
         (
-            "Każdy obiekt media MUSI mieć pola: type (photo/video/doc), resolver "
+            "Każdy obiekt media powinien zawierać resolver "
             "(np. twitter/telegram/instagram/rss) oraz reference – obiekt z prawdziwymi"
-            " identyfikatorami źródła (np. {\"tg_post_url\": \"https://t.me/...\","
+            " identyfikatorami źródła (np. {\"tg_post_url\": \"https://t.me/...\"," 
             " \"posted_at\": \"2024-06-09T10:32:00Z\"})."
         ),
         (
             "Treść posta oraz wszystkie media muszą opisywać to samo wydarzenie lub wpis."
-            " Nie wolno łączyć tekstu z mediami pochodzącymi z innych, niepowiązanych źródeł."
             " Jeśli nie masz dopasowanego medium, zwróć pustą listę media."
         ),
         "Pole identyfikator (jeśli użyte) ma zawierać rzeczywistą wartość identyfikatora, a nie nazwę pola ani placeholder.",
@@ -286,14 +613,12 @@ def _build_user_prompt(
             " kanoniczny adres strony źródłowej (np. permalink posta lub artykułu),"
             " zamiast podawać bezpośredni link do pliku multimedialnego."
         ),
-        "Nie podawaj bezpośrednich linków do plików – korzystaj z referencji platformy.",
         (
-            "Jeśli korzystasz z wpisów Telegram (linki https://t.me/…), potraktuj każdą"
-            " pojedynczą wiadomość jako oddzielne źródło. Użyj jednego konkretnego"
-            " wpisu i zapisz go w reference.tg_post_url zamiast mieszać treści z kilku"
-            " komunikatów."
+            "Jeśli korzystasz z wpisów Telegram, pamiętaj o zachowaniu sensu i chronologii całego wątku,"
+            " aby poprawnie oddać kontekst wydarzeń."
         ),
-        "Nie dodawaj tekstu poza opisanym obiektem JSON.",
+        "Nie podawaj bezpośrednich linków do plików w treści posta.",
+
         "Używaj wyłącznie angielskich nazw pól w formacie snake_case (ASCII, bez spacji i znaków diakrytycznych).",
         (
             "Jeśli media pochodzą z artykułu lub innego źródła, dołącz dostępne metadane"
@@ -304,8 +629,12 @@ def _build_user_prompt(
 
     if channel.max_chars:
         instructions.append(
-            "Długość odpowiedzi musi mieścić się w limicie znaków opisanym w systemowym promptcie."
+            "Długość odpowiedzi musi mieścić się w limicie znaków opisanym w poleceniach kanału."
         )
+
+    sources_prompt = _channel_sources_prompt(channel).strip()
+    if sources_prompt:
+        instructions.append(sources_prompt)
 
     article_context = _article_context(article)
     if article_context:
@@ -355,6 +684,59 @@ def _guess_media_type_from_url(url: str, fallback: str) -> str:
     if ext in DOC_EXTENSIONS:
         return "doc"
     return fallback
+
+
+def _normalise_article_sources(raw: Any) -> list[dict[str, str]]:
+    def _coerce(entry: Any) -> dict[str, str] | None:
+        if isinstance(entry, str):
+            url = entry.strip()
+            if not url:
+                return None
+            return {"url": url}
+        if isinstance(entry, Mapping):
+            url_value = (
+                str(
+                    entry.get("url")
+                    or entry.get("link")
+                    or entry.get("source")
+                    or entry.get("href")
+                    or ""
+                )
+                .strip()
+            )
+            if not url_value:
+                return None
+            label_value = (
+                str(
+                    entry.get("label")
+                    or entry.get("title")
+                    or entry.get("name")
+                    or ""
+                )
+                .strip()
+            )
+            payload: dict[str, str] = {"url": url_value}
+            if label_value:
+                payload["label"] = label_value
+            return payload
+        return None
+
+    if isinstance(raw, list):
+        seen: set[str] = set()
+        normalised: list[dict[str, str]] = []
+        for item in raw:
+            processed = _coerce(item)
+            if not processed:
+                continue
+            url = processed["url"]
+            if url in seen:
+                continue
+            seen.add(url)
+            normalised.append(processed)
+        return normalised
+
+    single = _coerce(raw)
+    return [single] if single else []
 
 
 def _normalise_media_payload(media: Any, fallback_prompt: str) -> list[dict[str, Any]]:
@@ -666,16 +1048,6 @@ def _resolve_media_reference(
     if not resolver or not reference:
         return ""
 
-    def _looks_like_asset(url: str) -> bool:
-        parsed = urlparse(url)
-        if not parsed.scheme.startswith("http"):
-            return False
-        path = parsed.path or ""
-        if not path:
-            return False
-        ext = os.path.splitext(path)[-1].lower()
-        return ext in {".jpg", ".jpeg", ".png", ".gif", ".mp4", ".mov", ".webm", ".pdf", ".mkv", ".avi"}
-
     def _reference_fallback_url() -> str:
         for key in (
             "direct_url",
@@ -715,6 +1087,15 @@ def _resolve_media_reference(
             )
             return fallback_url
         if fallback_url:
+            html_url = _resolve_media_via_html_fallback(fallback_url, media_type, resolver)
+            if html_url:
+                logger.info(
+                    "Brak MEDIA_RESOLVER_URL – pobrano media z fallback HTML %s (resolver=%s, ref=%s)",
+                    fallback_url,
+                    resolver,
+                    reference,
+                )
+                return html_url
             if resolver == "telegram" and fallback_url.startswith(("https://t.me/", "http://t.me/")):
                 logger.info(
                     "Brak MEDIA_RESOLVER_URL – używam adresu Telegram %s (resolver=%s, ref=%s)",
@@ -936,82 +1317,53 @@ def _parse_gpt_payload(raw: str) -> dict[str, Any] | None:
         "media": media,
         "raw_response": cleaned,
     }
+    if "source" in data:
+        payload["source"] = data.get("source")
     return payload
 
 
-def gpt_generate_text(system_prompt: str, user_prompt: str, *, response_format: dict[str, Any] | None = None) -> str | None:
+def gpt_generate_text(
+    system_prompt: str,
+    user_prompt: str,
+    *,
+    log_context: dict[str, Any] | None = None,
+) -> str | None:
     try:
         cli = _client()
     except RuntimeError as exc:
         logger.warning("Pomijam generowanie GPT: %s", exc)
         return None
     try:
-        model = os.getenv("OPENAI_MODEL", "gpt-4.1")
+        model = os.getenv("OPENAI_MODEL", "gpt-5")
         temperature = float(os.getenv("OPENAI_TEMPERATURE", 0.2))
+        seed = _openai_seed()
+        context = dict(log_context or {})
 
-        use_tools = response_format is None
-        if use_tools:
-            try:
-                response = cli.responses.create(
-                    model=model,
-                    temperature=temperature,
-                    seed=_openai_seed(),
-                    input=[
-                        {
-                            "role": "system",
-                            "content": [{"type": "text", "text": system_prompt}],
-                        },
-                        {
-                            "role": "user",
-                            "content": [{"type": "text", "text": user_prompt}],
-                        },
-                    ],
-                    tools=[
-                        {"type": "web_search"},
-                        {"type": "image_generation"},
-                    ],
-                )
-                text_chunks: list[str] = []
-                output_items = getattr(response, "output", None) or []
-                for item in output_items:
-                    content = getattr(item, "content", None) or []
-                    for part in content:
-                        text = getattr(part, "text", None)
-                        if text:
-                            text_chunks.append(text)
-                if not text_chunks:
-                    fallback_text = getattr(response, "output_text", None)
-                    if isinstance(fallback_text, str) and fallback_text.strip():
-                        text_chunks.append(fallback_text.strip())
-                combined = "\n".join(chunk.strip() for chunk in text_chunks if chunk).strip()
-                if combined:
-                    return combined
-            except BadRequestError as exc:
-                error_param = getattr(exc, "param", "") or ""
-                if "tools" in error_param or "tools" in str(exc):
-                    logger.warning(
-                        "Model %s odrzucił narzędzia (%s) – fallback do zapytania bez tools.",
-                        model,
-                        error_param or exc,
-                    )
-                else:
-                    raise
-
-        chat_kwargs: dict[str, Any] = {
+        responses_payload: dict[str, Any] = {
             "model": model,
             "temperature": temperature,
-            "messages": [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt},
+            "input": [
+                {
+                    "role": "system",
+                    "content": [{"type": "input_text", "text": system_prompt}],
+                },
+                {
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": user_prompt}],
+                },
+            ],
+            "tools": [
+                {"type": "web_search"},
+                {"type": "image_generation"},
             ],
         }
-        if response_format is not None:
-            chat_kwargs["response_format"] = response_format
-        seed = _openai_seed()
         if seed is not None:
-            chat_kwargs["seed"] = seed
-        chat_response = cli.chat.completions.create(**chat_kwargs)
-        return chat_response.choices[0].message.content.strip()
+            responses_payload["seed"] = seed
+        response = _call_openai_responses(cli, responses_payload, context=context)
+        combined = _combine_response_text(response)
+        if combined:
+            return combined
+        return None
     except RateLimitError as e:
         # twarde „insufficient_quota” – nie retry’ujemy, zwracamy None
         if "insufficient_quota" in str(e):
@@ -1026,25 +1378,22 @@ def gpt_new_draft(channel: Channel) -> dict[str, Any] | None:
 
 
 def gpt_generate_post_payload(channel: Channel, article: dict[str, Any] | None = None) -> dict[str, Any] | None:
-    sys = _channel_system_prompt(channel)
+    channel_prompt = _channel_system_prompt(channel)
     recent_texts = _recent_post_texts(channel)
     avoid_texts: list[str] = []
     max_attempts = max(int(os.getenv("GPT_DUPLICATE_MAX_ATTEMPTS", 3)), 1)
     similarity_threshold = float(os.getenv("GPT_DUPLICATE_THRESHOLD", 0.9))
 
     for attempt in range(1, max_attempts + 1):
-        usr = _build_user_prompt(channel, article, avoid_texts)
-        logger.info(
-            "GPT draft request (channel=%s attempt=%s)\nSYSTEM:\n%s\nUSER:\n%s",
-            channel.id,
-            attempt,
-            sys,
-            usr,
-        )
+        system_prompt = _build_user_prompt(channel, article, avoid_texts)
         raw = gpt_generate_text(
-            sys,
-            usr,
-            response_format={"type": "json_object"},
+            system_prompt,
+            channel_prompt,
+            log_context={
+                "channel_id": channel.id,
+                "attempt": attempt,
+                "purpose": "draft",
+            },
         )
         if raw is None:
             return None
@@ -1088,13 +1437,20 @@ def gpt_generate_post_payload(channel: Channel, article: dict[str, Any] | None =
     return payload
 
 def gpt_rewrite_text(channel: Channel, text: str, editor_prompt: str) -> str:
-    sys = _channel_system_prompt(channel)
-    usr = (
+    channel_prompt = _channel_system_prompt(channel)
+    system_prompt = (
         "Przepisz poniższy tekst zgodnie z zasadami i wytycznymi edytora. "
-        "Zachowaj charakter kanału, wymagania dotyczące długości, emoji oraz stopki opisane w systemowym promptcie."
+        "Zachowaj charakter kanału, wymagania dotyczące długości, emoji oraz stopki opisane w poleceniach kanału."
 
     )
-    rewritten = gpt_generate_text(sys, usr)
+    rewritten = gpt_generate_text(
+        system_prompt,
+        channel_prompt,
+        log_context={
+            "channel_id": channel.id,
+            "purpose": "rewrite",
+        },
+    )
     return rewritten or text
 
 
@@ -1419,7 +1775,13 @@ def attach_media_from_payload(post: Post, media_payload: list[dict[str, Any]]):
         if extra_snapshots:
             source_entries.extend(extra_snapshots)
 
-    post.source_metadata = {"media": source_entries}
+    metadata = getattr(post, "source_metadata", {})
+    if not isinstance(metadata, dict):
+        metadata = {}
+    else:
+        metadata = dict(metadata)
+    metadata["media"] = source_entries
+    post.source_metadata = metadata
     post.save(update_fields=["source_metadata"])
 
 
@@ -1437,13 +1799,20 @@ def create_post_from_payload(channel: Channel, payload: dict[str, Any]) -> Post:
         for raw_item in media_items:
             if isinstance(raw_item, dict):
                 source_meta_entries.append(_media_source_snapshot(raw_item))
+    article_sources = _normalise_article_sources(payload.get("source"))
+    metadata: dict[str, Any] = {}
+    if article_sources:
+        metadata["article"] = {"sources": article_sources}
+    if source_meta_entries:
+        metadata.setdefault("media", source_meta_entries)
+
     post = Post.objects.create(
         channel=channel,
         text=text,
         status="DRAFT",
         origin="gpt",
         generated_prompt=raw_payload,
-        source_metadata={"media": source_meta_entries} if source_meta_entries else {},
+        source_metadata=metadata,
     )
     if isinstance(media_items, list):
         attach_media_from_payload(post, media_items)

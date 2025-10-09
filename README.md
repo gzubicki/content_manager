@@ -35,5 +35,12 @@ Po zakończeniu logowanie do panelu administracyjnego będzie możliwe pod [http
 - `DATABASE_URL=postgres://app:pass@db:5432/app`
 - `REDIS_URL=redis://redis:6379/0`
 - `OPENAI_API_KEY=...`
-- `OPENAI_MODEL=gpt-4o`
+- `OPENAI_MODEL=gpt-5` (model musi obsługiwać narzędzie `web_search`)
 - `TG_BOT_TOKEN=...` (+ bot adminem kanału)
+
+## ENV (opcjonalne)
+- `OPENAI_TIMEOUT` – niestandardowy limit czasu żądań do OpenAI (domyślnie 60 s).
+- `OPENAI_MAX_RETRIES` – liczba ponowień na poziomie klienta OpenAI.
+- `OPENAI_BASE_URL` – alternatywny endpoint (np. Azure/OpenAI-proxy).
+- `OPENAI_ORG` – identyfikator organizacji OpenAI.
+- `OPENAI_PROJECT` – identyfikator projektu OpenAI.

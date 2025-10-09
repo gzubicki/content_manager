@@ -4,7 +4,7 @@ from unittest.mock import patch
 from django.test import TestCase
 
 from apps.posts import services
-from apps.posts.models import Channel, Post
+from apps.posts.models import Channel, ChannelSource, Post
 
 
 class ChannelPromptPropagationTest(TestCase):
@@ -28,41 +28,40 @@ class ChannelPromptPropagationTest(TestCase):
             services.gpt_generate_post_payload(self.channel)
 
         system_prompt, user_prompt = mock_gpt.call_args[0][:2]
-        self.assertIn("Wytyczne kanału", system_prompt)
-        self.assertIn("maksymalnie 321 znaków", system_prompt)
-        self.assertIn("Liczba emoji", system_prompt)
-        self.assertIn("linia1", system_prompt)
-        self.assertIn("linia2", system_prompt)
-        self.assertIn("Nie dodawaj linków w treści.", system_prompt)
+        self.assertIn("Zwróć dokładnie jeden obiekt JSON", system_prompt)
+        self.assertIn("resolver (np. twitter/telegram/instagram/rss)", system_prompt)
+        self.assertIn("reference – obiekt z prawdziwymi identyfikatorami", system_prompt)
+        self.assertIn("reference.source_locator", system_prompt)
+        self.assertIn("angielskich nazw pól", system_prompt)
+        self.assertIn("Treść posta oraz wszystkie media muszą opisywać to samo wydarzenie", system_prompt)
+        self.assertIn("Jeśli korzystasz z wpisów Telegram", system_prompt)
+        self.assertIn("Nie podawaj bezpośrednich linków", system_prompt)
+        self.assertIn("poleceniach kanału", system_prompt)
+        self.assertNotIn("linia1", system_prompt)
+        self.assertNotIn("linia2", system_prompt)
 
-        self.assertIn("limicie znaków", user_prompt)
-        self.assertIn("resolver (np. twitter/telegram/instagram/rss)", user_prompt)
-        self.assertIn("reference – obiekt z prawdziwymi identyfikatorami", user_prompt)
-        self.assertIn("reference.source_locator", user_prompt)
-        self.assertIn("angielskich nazw pól", user_prompt)
-        self.assertIn("Treść posta oraz wszystkie media muszą opisywać to samo wydarzenie", user_prompt)
-        self.assertIn("Jeśli korzystasz z wpisów Telegram", user_prompt)
-        self.assertIn("Nie podawaj bezpośrednich linków", user_prompt)
-        self.assertNotIn("linia1", user_prompt)
-        self.assertNotIn("linia2", user_prompt)
-        self.assertNotIn("Nie dodawaj linków", user_prompt)
+        self.assertIn("Wytyczne kanału", user_prompt)
+        self.assertIn("maksymalnie 321 znaków", user_prompt)
+        self.assertIn("Liczba emoji", user_prompt)
+        self.assertIn("linia1", user_prompt)
+        self.assertIn("linia2", user_prompt)
+        self.assertIn("Nie dodawaj linków w treści.", user_prompt)
 
     def test_rewrite_text_uses_same_channel_rules(self):
         with patch("apps.posts.services.gpt_generate_text") as mock_gpt:
             services.gpt_rewrite_text(self.channel, "oryginalny tekst", "edytor")
 
         system_prompt, user_prompt = mock_gpt.call_args[0][:2]
-        self.assertIn("Wytyczne kanału", system_prompt)
-        self.assertIn("maksymalnie 321 znaków", system_prompt)
-        self.assertIn("linia1", system_prompt)
-        self.assertIn("linia2", system_prompt)
-        self.assertIn("Nie dodawaj linków", system_prompt)
+        self.assertIn("Przepisz poniższy tekst", system_prompt)
+        self.assertIn("poleceniach kanału", system_prompt)
+        self.assertNotIn("linia1", system_prompt)
+        self.assertNotIn("linia2", system_prompt)
 
-        self.assertIn("Zachowaj charakter kanału", user_prompt)
-        self.assertIn("długości, emoji oraz stopki", user_prompt)
-        self.assertNotIn("linia1", user_prompt)
-        self.assertNotIn("linia2", user_prompt)
-        self.assertNotIn("Nie dodawaj linków", user_prompt)
+        self.assertIn("Wytyczne kanału", user_prompt)
+        self.assertIn("maksymalnie 321 znaków", user_prompt)
+        self.assertIn("linia1", user_prompt)
+        self.assertIn("linia2", user_prompt)
+        self.assertIn("Nie dodawaj linków", user_prompt)
 
     def test_duplicate_detection_triggers_retry_with_additional_context(self):
         Post.objects.create(
@@ -85,6 +84,35 @@ class ChannelPromptPropagationTest(TestCase):
         self.assertEqual(payload["post"]["text"], "Nowy raport o sytuacji")
         self.assertEqual(mock_gpt.call_count, 2)
 
-        second_user_prompt = mock_gpt.call_args_list[1][0][1]
-        self.assertIn("Unikaj powtarzania poniższych tekstów", second_user_prompt)
-        self.assertIn("Powtarzalny wpis o dronach", second_user_prompt)
+        second_system_prompt = mock_gpt.call_args_list[1][0][0]
+        self.assertIn("Unikaj powtarzania poniższych tekstów", second_system_prompt)
+        self.assertIn("Powtarzalny wpis o dronach", second_system_prompt)
+
+    def test_channel_sources_are_listed_in_prompt(self):
+        primary = ChannelSource.objects.create(
+            channel=self.channel,
+            name="ISW",
+            url="https://www.understandingwar.org/",
+            priority=5,
+        )
+        secondary = ChannelSource.objects.create(
+            channel=self.channel,
+            name="DeepState",
+            url="https://deepstate.com/",
+            priority=1,
+        )
+
+        with patch("apps.posts.services._select_channel_sources") as mock_select, patch(
+            "apps.posts.services.gpt_generate_text"
+        ) as mock_gpt:
+            mock_select.return_value = [primary]
+            mock_gpt.return_value = json.dumps({"post": {"text": "tekst"}, "media": []})
+            services.gpt_generate_post_payload(self.channel)
+
+        mock_select.assert_called_with(self.channel, limit=1)
+
+        system_prompt, _ = mock_gpt.call_args[0][:2]
+        self.assertIn("Preferuj następujące źródło", system_prompt)
+        self.assertIn(primary.url, system_prompt)
+        self.assertNotIn(secondary.url, system_prompt)
+        self.assertIn("priorytet", system_prompt)

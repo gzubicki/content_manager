@@ -28,7 +28,7 @@ from django.utils.translation import gettext, ngettext
 from django.contrib.admin.templatetags.admin_urls import admin_urlname
 
 from . import services
-from .models import Channel, DraftPost, Post, PostMedia, ScheduledPost
+from .models import Channel, ChannelSource, DraftPost, Post, PostMedia, ScheduledPost
 from .tasks import task_gpt_generate_for_channel, task_gpt_rewrite_post
 from .drafts import iter_missing_draft_requirements
 from .validators import validate_post_text_for_channel
@@ -246,12 +246,22 @@ class ChannelAdminForm(forms.ModelForm):
         }
 
 
+class ChannelSourceInline(admin.TabularInline):
+    model = ChannelSource
+    extra = 1
+    fields = ("name", "url", "priority", "is_active")
+    ordering = ("-is_active", "-priority", "name")
+    verbose_name = "Źródło"
+    verbose_name_plural = "Źródła"
+
+
 @admin.register(Channel)
 class ChannelAdmin(admin.ModelAdmin):
     form = ChannelAdminForm
     list_display = ("id","name","slug","tg_channel_id","language","draft_target_count")
     search_fields = ("name","slug","tg_channel_id")
     actions = ["act_fill_to_target","act_gpt_fill_missing"]
+    inlines = [ChannelSourceInline]
 
     def _handle_draft_fill_action(self, request, queryset, empty_message: str) -> None:
         queued, affected = enqueue_missing_drafts(queryset)
