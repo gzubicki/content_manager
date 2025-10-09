@@ -71,6 +71,9 @@ class MediaHandlingTest(TestCase):
         self.assertEqual(
             twitter_item["reference"].get("tweet_url"), "https://x.com/i/status/12345"
         )
+        self.assertEqual(
+            twitter_item["reference"].get("tweet_url"), "https://x.com/i/status/12345"
+        )
         self.assertEqual(twitter_item["posted_at"], "2025-01-01T12:00:00Z")
         telegram_item = result[1]
         self.assertEqual(telegram_item["resolver"], "telegram")

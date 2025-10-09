@@ -12,6 +12,7 @@ from html import unescape
 from html.parser import HTMLParser
 from pathlib import Path
 from urllib.parse import urlparse, urlunparse, unquote
+from urllib.parse import urlparse, urlunparse, unquote
 import re
 
 import httpx
@@ -108,6 +109,90 @@ def _is_twitter_host(host: str) -> bool:
         or lowered == "x.com"
         or lowered.endswith(".x.com")
     )
+
+
+def _extract_tweet_details(url: str) -> tuple[str, str, str]:
+    if not isinstance(url, str):
+        return "", "", ""
+    cleaned = url.strip()
+    if not cleaned:
+        return "", "", ""
+    try:
+        parsed = urlparse(cleaned)
+    except Exception:
+        return "", "", ""
+
+    host = parsed.hostname or ""
+    if not _is_twitter_host(host):
+        return "", "", ""
+
+    segments = [segment for segment in (parsed.path or "").split("/") if segment]
+    username = ""
+    candidate = ""
+
+    lower_segments = [segment.lower() for segment in segments]
+    if len(lower_segments) >= 3 and lower_segments[1] == "status":
+        username = segments[0]
+        candidate = segments[2]
+    elif len(lower_segments) >= 3 and lower_segments[0] == "i" and lower_segments[1] == "status":
+        candidate = segments[2]
+    elif len(lower_segments) >= 2 and lower_segments[-2] == "status":
+        if len(segments) >= 3:
+            username = segments[-3]
+        candidate = segments[-1]
+    elif segments:
+        username = segments[0]
+        candidate = segments[-1]
+
+    match = re.search(r"(\d{5,})", candidate or "")
+    tweet_id = match.group(1) if match else ""
+
+    if not tweet_id:
+        return "", username, ""
+
+    canonical_host = "x.com"
+    if username:
+        canonical_path = f"/{username}/status/{tweet_id}"
+    else:
+        canonical_path = f"/i/status/{tweet_id}"
+
+    canonical = urlunparse(
+        (
+            parsed.scheme or "https",
+            canonical_host,
+            canonical_path,
+            "",
+            "",
+            "",
+        )
+    )
+
+    return canonical, username, tweet_id
+
+
+def _reference_username(reference: Mapping[str, Any]) -> str:
+    for key in ("author_username", "user_screen_name", "username", "screen_name"):
+        value = reference.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return ""
+
+
+def _canonical_tweet_url(username: str, tweet_id: str) -> str:
+    tweet_id = (tweet_id or "").strip()
+    username = (username or "").strip()
+    if not tweet_id:
+        return ""
+    if username:
+        return f"https://x.com/{username}/status/{tweet_id}"
+    return f"https://x.com/i/status/{tweet_id}"
+
+
+def _is_twitter_host(host: str) -> bool:
+    if not host:
+        return False
+    lowered = host.lower()
+    return lowered.endswith("twitter.com") or lowered.endswith("x.com")
 
 
 def _extract_tweet_details(url: str) -> tuple[str, str, str]:
@@ -676,6 +761,10 @@ def _channel_constraints_prompt(channel: Channel) -> str:
 
     if getattr(channel, "no_links_in_text", False):
         rules.append("Nie dodawaj linków w treści.")
+        
+    sources_prompt = _channel_sources_prompt(channel).strip()
+    if sources_prompt:
+        rules.append(sources_prompt)
 
     return "\n".join(rule for rule in rules if rule)
 
@@ -730,18 +819,13 @@ def _channel_sources_prompt(channel: Channel) -> str:
     selected = _select_channel_sources(channel, limit=1)
     if not selected:
         return ""
-
+    
     source = selected[0]
-    name = (source.name or "").strip()
     url = (source.url or "").strip()
-    priority = getattr(source, "priority", 0)
-    label = url
-    if name:
-        label = f"{name} – {url}"
 
     lines = [
-        "Preferowane  źródło:",
-        f"{label}",
+        "Preferowane źródło:",
+        f"{url}",
     ]
     return "\n".join(lines)
 
@@ -877,7 +961,7 @@ def _build_user_prompt(
             "(np. twitter/telegram/instagram/rss) oraz reference – obiekt z prawdziwymi"
             " identyfikatorami źródła (np. {\"tg_post_url\": \"https://t.me/...\"," 
             " \"posted_at\": \"2024-06-09T10:32:00Z\"})."
-            "Jeśli scrappujesz zwykłą stronę www, postaraj się podać media z artykułu"
+            "Jeśli jest to strona www, podaj url media zdjęcie/video z artykułu"
         ),
         (
             " Jeśli nie masz dopasowanego medium, zwróć pustą listę media."
@@ -891,7 +975,7 @@ def _build_user_prompt(
         "Używaj wyłącznie angielskich nazw pól w formacie snake_case (ASCII, bez spacji i znaków diakrytycznych).",
         (
             "Jeśli media pochodzą z artykułu lub innego źródła, dołącz dostępne metadane"
-            " (caption, posted_at, author)."
+            " (caption (max 20znaków), posted_at, author)."
         ),
         "Pole has_spoiler (true/false) jest opcjonalne i dotyczy wyłącznie zdjęć wymagających ukrycia.",
     ]
@@ -901,9 +985,6 @@ def _build_user_prompt(
             "Długość odpowiedzi musi mieścić się w limicie znaków opisanym w poleceniach kanału."
         )
 
-    sources_prompt = _channel_sources_prompt(channel).strip()
-    if sources_prompt:
-        instructions.append(sources_prompt)
 
     article_context = _article_context(article)
     if article_context:
