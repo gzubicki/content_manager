@@ -54,12 +54,19 @@ async def _publish_async(post: Post, medias):
         return None
     chat = post.channel.tg_channel_id
     sent_group_ids = []
+    text_message_id = None
+    post_text = post.text or ""
+    text_has_content = bool(post_text.strip())
+    caption_text = ""
+    if text_has_content and len(post_text) <= 1024:
+        caption_text = post_text
+    send_text_separately = text_has_content and not caption_text
     if medias:
         im = []
         opened_files = []
         media_records = []
         try:
-            for m in medias:
+            for index, m in enumerate(medias):
                 media = m.tg_file_id
                 if not media:
                     cache_path = m.cache_path
@@ -70,18 +77,35 @@ async def _publish_async(post: Post, medias):
                         opened_files.append(media)
                 if not media:
                     continue
+                caption_kwargs = {}
+                if index == 0 and caption_text:
+                    caption_kwargs["caption"] = caption_text
                 if m.type == "photo":
-                    im.append(InputMediaPhoto(media=media, has_spoiler=m.has_spoiler))
+                    im.append(
+                        InputMediaPhoto(
+                            media=media,
+                            has_spoiler=m.has_spoiler,
+                            **caption_kwargs,
+                        )
+                    )
                 elif m.type == "video":
-                    im.append(InputMediaVideo(media=media, has_spoiler=m.has_spoiler))
+                    im.append(
+                        InputMediaVideo(
+                            media=media,
+                            has_spoiler=m.has_spoiler,
+                            **caption_kwargs,
+                        )
+                    )
                 elif m.type == "doc":
-                    im.append(InputMediaDocument(media=media))
+                    im.append(InputMediaDocument(media=media, **caption_kwargs))
                 else:
                     continue
                 media_records.append(m)
             if im:
                 res = await bot.send_media_group(chat_id=chat, media=im)
                 sent_group_ids = [r.message_id for r in res]
+                if caption_text and sent_group_ids:
+                    text_message_id = sent_group_ids[0]
                 for record, message in zip(media_records, res):
                     file_id = None
                     if record.type == "photo" and getattr(message, "photo", None):
@@ -99,8 +123,10 @@ async def _publish_async(post: Post, medias):
                     fh.close()
                 except Exception:
                     pass
-    msg = await bot.send_message(chat_id=chat, text=post.text)
-    return sent_group_ids, msg.message_id
+    if not medias or send_text_separately:
+        msg = await bot.send_message(chat_id=chat, text=post_text)
+        text_message_id = msg.message_id
+    return sent_group_ids, text_message_id
 
 @shared_task
 def publish_post(post_id: int):
@@ -126,6 +152,8 @@ def publish_post(post_id: int):
     if result is None:
         return None
     sent_group_ids, msg_id = result
+    if msg_id is None and sent_group_ids:
+        msg_id = sent_group_ids[0]
     post.message_id = msg_id
     post.dupe_score = services.compute_dupe(post)
     post.status = "PUBLISHED"
