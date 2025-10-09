@@ -335,7 +335,7 @@ class MediaHandlingTest(TestCase):
                 caption="desc",
             )
 
-        self.assertEqual(url, "https://t.me/source/456")
+        self.assertEqual(url, "")
 
     def test_resolve_media_reference_uses_twitter_html_fallback(self) -> None:
         html_doc = """

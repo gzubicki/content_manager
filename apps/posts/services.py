@@ -1462,14 +1462,6 @@ def _resolve_media_reference(
                     reference,
                 )
                 return html_url
-            if resolver == "telegram" and fallback_url.startswith(("https://t.me/", "http://t.me/")):
-                logger.info(
-                    "Brak MEDIA_RESOLVER_URL – używam adresu Telegram %s (resolver=%s, ref=%s)",
-                    fallback_url,
-                    resolver,
-                    reference,
-                )
-                return fallback_url
             logger.warning(
                 "Pominięto fallback URL %s – wygląda na stronę HTML. Skonfiguruj TELEGRAM_RESOLVER_* lub MEDIA_RESOLVER_URL",
                 fallback_url,
