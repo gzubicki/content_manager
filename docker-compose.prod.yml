@@ -30,6 +30,7 @@ services:
       redis: { condition: service_healthy }
     volumes:
       - media:/var/app/media
+      - resolver:/var/app/resolver
 
   web:
     <<: *app
@@ -47,9 +48,11 @@ services:
     command: celery -A content_manager beat -l info -s /var/run/celery/celerybeat-schedule
     volumes:
       - media:/var/app/media
+      - resolver:/var/app/resolver
       - celerybeat:/var/run/celery
 
 volumes:
   pgdata:
   media:
+  resolver:
   celerybeat:
