@@ -5,6 +5,7 @@ import logging
 import mimetypes
 import os
 import random
+import random
 import textwrap
 import uuid
 from html import unescape
@@ -1461,8 +1462,15 @@ def _parse_gpt_payload(raw: str) -> dict[str, Any] | None:
         "media": media,
         "raw_response": cleaned,
     }
+    source_data: Any | None = None
     if "source" in data:
-        payload["source"] = data.get("source")
+        source_data = data.get("source")
+    if source_data is None:
+        post_sources = post_payload.get("source") or post_payload.get("sources")
+        if post_sources:
+            source_data = post_sources
+    if source_data is not None:
+        payload["source"] = source_data
     return payload
 
 
@@ -1943,7 +1951,12 @@ def create_post_from_payload(channel: Channel, payload: dict[str, Any]) -> Post:
         for raw_item in media_items:
             if isinstance(raw_item, dict):
                 source_meta_entries.append(_media_source_snapshot(raw_item))
-    article_sources = _normalise_article_sources(payload.get("source"))
+    raw_article_sources = payload.get("source")
+    if raw_article_sources is None:
+        post_section = payload.get("post")
+        if isinstance(post_section, Mapping):
+            raw_article_sources = post_section.get("source") or post_section.get("sources")
+    article_sources = _normalise_article_sources(raw_article_sources)
     metadata: dict[str, Any] = {}
     if article_sources:
         metadata["article"] = {"sources": article_sources}

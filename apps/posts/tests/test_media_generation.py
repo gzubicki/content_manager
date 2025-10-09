@@ -478,3 +478,24 @@ class ArticleSourceMetadataTest(TestCase):
         self.assertIn("article", metadata)
         self.assertIn("media", metadata)
         self.assertEqual(metadata["article"]["sources"][0]["url"], "https://example.com/a")
+
+    def test_create_post_from_payload_reads_source_from_post_section(self) -> None:
+        payload = {
+            "post": {
+                "text": "Nowy wpis",
+                "source": [
+                    {"link": "https://example.com/artykul-1", "title": "Analiza"},
+                    "https://example.com/artykul-2",
+                ],
+            },
+            "media": [],
+        }
+
+        post = services.create_post_from_payload(self.channel, payload)
+
+        metadata = post.source_metadata
+        self.assertIn("article", metadata)
+        sources = metadata["article"].get("sources", [])
+        self.assertEqual(len(sources), 2)
+        self.assertEqual(sources[0]["label"], "Analiza")
+        self.assertEqual(sources[1]["url"], "https://example.com/artykul-2")
