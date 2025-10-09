@@ -34,6 +34,35 @@ class Channel(models.Model):
 
     def __str__(self): return self.name
 
+
+class ChannelSource(models.Model):
+    channel = models.ForeignKey(
+        Channel,
+        verbose_name="Kanał",
+        related_name="sources",
+        on_delete=models.CASCADE,
+    )
+    name = models.CharField("Nazwa", max_length=128)
+    url = models.URLField("Adres URL", max_length=500)
+    priority = models.PositiveIntegerField("Priorytet", default=1)
+    is_active = models.BooleanField("Aktywne", default=True)
+    created_at = models.DateTimeField("Utworzono", auto_now_add=True)
+    updated_at = models.DateTimeField("Zmieniono", auto_now=True)
+
+    class Meta:
+        verbose_name = "Źródło kanału"
+        verbose_name_plural = "Źródła kanału"
+        ordering = ("-is_active", "-priority", "name")
+        constraints = [
+            models.UniqueConstraint(
+                fields=["channel", "url"],
+                name="posts_channelsource_unique_channel_url",
+            )
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.name} ({self.url})"
+
 class Post(models.Model):
     class Status(models.TextChoices):
         DRAFT = "DRAFT", "DRAFT"
@@ -57,6 +86,7 @@ class Post(models.Model):
     approved_by = models.ForeignKey("auth.User", verbose_name="Zatwierdził", null=True, blank=True, on_delete=models.SET_NULL)
     dupe_score = models.FloatField("Podobieństwo (duplikat)", null=True, blank=True)
     origin = models.CharField("Pochodzenie", max_length=8, default="gpt")
+    source_url = models.URLField("Źródło treści", max_length=500, blank=True, default="")
     generated_prompt = models.TextField("Prompt generujący", blank=True, default="")
     expires_at = models.DateTimeField("Wygasa", null=True, blank=True)
     message_id = models.BigIntegerField("ID wiadomości (tekst)", null=True, blank=True)

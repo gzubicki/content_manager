@@ -26,6 +26,8 @@ services:
   web:
     build: .
     env_file: .env
+    environment:
+      SERVICE_ROLE: web
     depends_on:
       db:
         condition: service_healthy
@@ -54,6 +56,7 @@ services:
       - resolver:/var/app/resolver
     command: celery -A content_manager worker -l info -c 2
     environment:
+      SERVICE_ROLE: worker
       CELERY_WORKER_PREFETCH_MULTIPLIER: "1"
     restart: unless-stopped
 
@@ -71,6 +74,8 @@ services:
       - resolver:/var/app/resolver
       - celerybeat:/var/run/celery
     command: celery -A content_manager beat -l info -s /var/run/celery/celerybeat-schedule
+    environment:
+      SERVICE_ROLE: beat
     restart: unless-stopped
 
 volumes:

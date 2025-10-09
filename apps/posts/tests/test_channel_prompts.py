@@ -4,7 +4,7 @@ from unittest.mock import patch
 from django.test import TestCase
 
 from apps.posts import services
-from apps.posts.models import Channel, Post
+from apps.posts.models import Channel, ChannelSource, Post
 
 
 class ChannelPromptPropagationTest(TestCase):
@@ -87,3 +87,32 @@ class ChannelPromptPropagationTest(TestCase):
         second_system_prompt = mock_gpt.call_args_list[1][0][0]
         self.assertIn("Unikaj powtarzania poniższych tekstów", second_system_prompt)
         self.assertIn("Powtarzalny wpis o dronach", second_system_prompt)
+
+    def test_channel_sources_are_listed_in_prompt(self):
+        primary = ChannelSource.objects.create(
+            channel=self.channel,
+            name="ISW",
+            url="https://www.understandingwar.org/",
+            priority=5,
+        )
+        secondary = ChannelSource.objects.create(
+            channel=self.channel,
+            name="DeepState",
+            url="https://deepstate.com/",
+            priority=1,
+        )
+
+        with patch("apps.posts.services._select_channel_sources") as mock_select, patch(
+            "apps.posts.services.gpt_generate_text"
+        ) as mock_gpt:
+            mock_select.return_value = [primary]
+            mock_gpt.return_value = json.dumps({"post": {"text": "tekst"}, "media": []})
+            services.gpt_generate_post_payload(self.channel)
+
+        mock_select.assert_called_with(self.channel, limit=1)
+
+        system_prompt, _ = mock_gpt.call_args[0][:2]
+        self.assertIn("Preferuj następujące źródło", system_prompt)
+        self.assertIn(primary.url, system_prompt)
+        self.assertNotIn(secondary.url, system_prompt)
+        self.assertIn("priorytet", system_prompt)
