@@ -58,24 +58,8 @@ def task_publish_due():
     for post_id in due_ids:
         publish_post.delay(post_id)
 
-def _video_input_kwargs(media) -> dict[str, int]:
-    reference = getattr(media, "reference_data", None)
-    if not isinstance(reference, dict):
-        return {}
-    metadata = reference.get("video_metadata")
-    if not isinstance(metadata, dict):
-        return {}
-
-    result: dict[str, int] = {}
-    for key in ("width", "height", "duration"):
-        value = metadata.get(key)
-        try:
-            parsed = int(value)
-        except (TypeError, ValueError):
-            continue
-        if parsed > 0:
-            result[key] = parsed
-    return result
+async def _video_input_kwargs(media) -> dict[str, int]:
+    return await asyncio.to_thread(services.video_metadata_kwargs, media)
 
 
 async def _publish_async(post: Post, medias):
@@ -124,7 +108,7 @@ async def _publish_async(post: Post, medias):
                         )
                     )
                 elif m.type == "video":
-                    video_kwargs = _video_input_kwargs(m)
+                    video_kwargs = await _video_input_kwargs(m)
                     im.append(
                         InputMediaVideo(
                             media=media,

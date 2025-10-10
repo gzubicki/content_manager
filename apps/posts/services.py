@@ -40,6 +40,9 @@ from .models import Channel, ChannelSource, Post, PostMedia
 logger = logging.getLogger(__name__)
 
 
+_VIDEO_METADATA_KEYS: tuple[str, ...] = ("width", "height", "duration")
+
+
 class _MetaTagParser(HTMLParser):
     def __init__(self) -> None:
         super().__init__()
@@ -2534,6 +2537,70 @@ def _extract_video_metadata(path: Path) -> dict[str, int]:
         metadata["duration"] = duration_int
 
     return metadata
+
+
+def _clean_video_metadata(metadata: Mapping[str, Any] | None) -> dict[str, int]:
+    if not isinstance(metadata, Mapping):
+        return {}
+
+    cleaned: dict[str, int] = {}
+    for key in _VIDEO_METADATA_KEYS:
+        value = metadata.get(key)
+        try:
+            parsed = int(value)
+        except (TypeError, ValueError):
+            continue
+        if parsed > 0:
+            cleaned[key] = parsed
+
+    if ("width" in cleaned) != ("height" in cleaned):
+        cleaned.pop("width", None)
+        cleaned.pop("height", None)
+
+    return cleaned
+
+
+def video_metadata_kwargs(pm: PostMedia) -> dict[str, int]:
+    if pm.type != "video":
+        return {}
+
+    raw_reference = pm.reference_data if isinstance(pm.reference_data, Mapping) else {}
+    if isinstance(raw_reference, Mapping):
+        existing = _clean_video_metadata(raw_reference.get("video_metadata"))
+    else:
+        existing = {}
+
+    needs_dimensions = not ("width" in existing and "height" in existing)
+    needs_duration = "duration" not in existing
+
+    updated_metadata: dict[str, int] = {}
+    cache_path = pm.cache_path or ""
+    if (needs_dimensions or needs_duration) and cache_path and os.path.exists(cache_path):
+        extracted = _extract_video_metadata(Path(cache_path))
+        if extracted:
+            updated_metadata = _clean_video_metadata(extracted)
+
+    if updated_metadata:
+        merged = dict(existing)
+        merged.update(updated_metadata)
+        if merged != existing:
+            reference_copy = dict(raw_reference) if isinstance(raw_reference, Mapping) else {}
+            reference_copy["video_metadata"] = merged
+            pm.reference_data = reference_copy
+            try:
+                pm.save(update_fields=["reference_data"])
+            except Exception:
+                logger.exception("Nie udało się zapisać metadanych wideo dla media %s", pm.id)
+        existing = merged
+
+    result: dict[str, int] = {}
+    if "width" in existing and "height" in existing:
+        result["width"] = existing["width"]
+        result["height"] = existing["height"]
+    if "duration" in existing:
+        result["duration"] = existing["duration"]
+
+    return result
 
 
 def cache_media(pm: PostMedia):

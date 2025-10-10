@@ -1,18 +1,16 @@
-from unittest.mock import patch
-
-from typing import Any
-
-from typing import Any
-
-import tempfile
+import asyncio
 import os
+import tempfile
+from typing import Any
 from unittest import mock
+from unittest.mock import patch
+from pathlib import Path
 
 import httpx
 
 from django.test import TestCase, override_settings
 
-from apps.posts import services
+from apps.posts import services, tasks
 from apps.posts.models import Channel, Post, PostMedia
 
 
@@ -543,6 +541,58 @@ class MediaHandlingTest(TestCase):
         pm.refresh_from_db()
         self.assertEqual(pm.type, "video")
         self.assertEqual(pm.reference_data.get("detected_type"), "video")
+
+    def test_video_metadata_kwargs_uses_existing_reference(self) -> None:
+        pm = PostMedia.objects.create(
+            post=self.post,
+            type="video",
+            reference_data={
+                "video_metadata": {"width": 1280, "height": 720, "duration": 33}
+            },
+        )
+
+        with patch("apps.posts.services._extract_video_metadata") as mock_extract:
+            result = services.video_metadata_kwargs(pm)
+
+        self.assertEqual(result, {"width": 1280, "height": 720, "duration": 33})
+        mock_extract.assert_not_called()
+
+    def test_video_metadata_kwargs_extracts_when_missing(self) -> None:
+        cache_dir = os.path.join(self._tmp_media.name, "cache")
+        os.makedirs(cache_dir, exist_ok=True)
+        cache_path = os.path.join(cache_dir, "video.mp4")
+        with open(cache_path, "wb") as fh:
+            fh.write(b"0")
+
+        pm = PostMedia.objects.create(
+            post=self.post,
+            type="video",
+            cache_path=cache_path,
+            reference_data={},
+        )
+
+        metadata = {"width": 1920, "height": 1080, "duration": 21}
+
+        with patch(
+            "apps.posts.services._extract_video_metadata", return_value=metadata
+        ) as mock_extract:
+            result = services.video_metadata_kwargs(pm)
+
+        self.assertEqual(result, metadata)
+        mock_extract.assert_called_once_with(Path(cache_path))
+        pm.refresh_from_db()
+        self.assertEqual(pm.reference_data.get("video_metadata"), metadata)
+
+    def test_video_input_kwargs_fetches_metadata_async(self) -> None:
+        pm = PostMedia.objects.create(post=self.post, type="video")
+
+        with patch(
+            "apps.posts.services.video_metadata_kwargs", return_value={"width": 640, "height": 360}
+        ) as mock_meta:
+            result = asyncio.run(tasks._video_input_kwargs(pm))
+
+        self.assertEqual(result, {"width": 640, "height": 360})
+        mock_meta.assert_called_once_with(pm)
 
 
 class ArticleSourceMetadataTest(TestCase):
