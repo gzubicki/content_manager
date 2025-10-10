@@ -135,9 +135,15 @@ async def _publish_async(post: Post, medias):
                     send_kwargs = dict(video_entry.get("caption_kwargs", {}))
                     send_kwargs.update(video_entry.get("video_kwargs", {}))
                     send_kwargs["has_spoiler"] = video_entry["record"].has_spoiler
+                    media = video_entry["media"]
+                    if hasattr(media, "seek"):
+                        try:
+                            media.seek(0)
+                        except (TypeError, OSError, ValueError):
+                            pass
                     message = await bot.send_video(
                         chat_id=chat,
-                        video=video_entry["media"],
+                        video=media,
                         **send_kwargs,
                     )
                     sent_group_ids = [message.message_id]

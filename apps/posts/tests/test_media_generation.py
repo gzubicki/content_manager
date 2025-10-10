@@ -1,4 +1,5 @@
 import asyncio
+import io
 import os
 import tempfile
 from typing import Any
@@ -650,6 +651,53 @@ class MediaHandlingTest(TestCase):
         mock_kwargs.assert_awaited_once_with(pm)
         self.assertEqual(pm.tg_file_id, "file123")
         pm.save.assert_called_once_with(update_fields=["tg_file_id"])
+
+    def test_publish_async_single_video_rewinds_file_before_upload(self) -> None:
+        cache_dir = os.path.join(self._tmp_media.name, "cache")
+        os.makedirs(cache_dir, exist_ok=True)
+        cache_path = os.path.join(cache_dir, "video.mp4")
+        with open(cache_path, "wb") as fh:
+            fh.write(b"data")
+
+        pm = PostMedia.objects.create(
+            post=self.post,
+            type="video",
+            cache_path=cache_path,
+            reference_data={
+                "video_metadata": {"width": 1920, "height": 1080, "duration": 33}
+            },
+        )
+        pm.save = mock.Mock()
+
+        class _File(io.BytesIO):
+            def __init__(self, payload: bytes):
+                super().__init__(payload)
+                self.name = cache_path
+                self.seek_calls: list[tuple[int, int]] = []
+
+            def seek(self, pos: int, whence: int = 0):
+                self.seek_calls.append((pos, whence))
+                return super().seek(pos, whence)
+
+        fake_file = _File(b"payload")
+
+        bot_mock = AsyncMock()
+        bot_mock.send_media_group = AsyncMock()
+        bot_mock.send_video = AsyncMock(return_value=mock.Mock(message_id=77, video=mock.Mock(file_id="vid")))
+
+        async def _run_sync(func, *args, **kwargs):
+            return func(*args, **kwargs)
+
+        with mock.patch.dict(os.environ, {"DJANGO_ALLOW_ASYNC_UNSAFE": "true"}):
+            with patch("apps.posts.services._bot_for", return_value=bot_mock), patch(
+                "apps.posts.tasks._video_input_kwargs", new=AsyncMock(return_value={})
+            ), patch("apps.posts.tasks.asyncio.to_thread", side_effect=_run_sync), patch(
+                "apps.posts.tasks.open", return_value=fake_file
+            ):
+                asyncio.run(tasks._publish_async(self.post, [pm]))
+
+        self.assertIn((0, 0), fake_file.seek_calls)
+        bot_mock.send_video.assert_awaited_once()
 
 
 class ArticleSourceMetadataTest(TestCase):
