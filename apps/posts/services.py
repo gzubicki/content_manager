@@ -977,18 +977,8 @@ def _build_user_prompt(
         ),
         "Pole has_spoiler (true/false) jest opcjonalne i dotyczy wyłącznie zdjęć wymagających ukrycia.",
         "Treść posta oraz wszystkie media muszą opisywać to samo wydarzenie.",
-        "Nie podawaj bezpośrednich linków w treści posta – linki umieszczaj w polu source lub w mediach.",
     ]
 
-    if channel.max_chars:
-        instructions.append(
-            "Długość odpowiedzi musi mieścić się w limicie znaków opisanym w poleceniach kanału."
-        )
-
-    if not _article_has_sources(article):
-        sources_prompt = _channel_sources_prompt(channel).strip()
-        if sources_prompt:
-            instructions.append(sources_prompt)
 
     article_context = _article_context(article)
     if article_context:
