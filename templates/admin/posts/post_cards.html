@@ -29,6 +29,22 @@
       {{ cl.formset.management_form }}
     {% endif %}
     {% include "admin/posts/includes/post_card_grid.html" %}
+    <div class="post-delete-modal" data-post-delete-modal hidden>
+      <div class="post-delete-modal__backdrop" data-post-delete-dismiss></div>
+      <div class="post-delete-modal__dialog" role="dialog" aria-modal="true" aria-labelledby="post-delete-modal-title">
+        <div class="post-delete-modal__content">
+          <h2 id="post-delete-modal-title" class="post-delete-modal__title">Potwierdź usunięcie</h2>
+          <p class="post-delete-modal__description">
+            Czy na pewno chcesz usunąć <strong data-post-delete-object>wybrany wpis</strong>? Tej operacji nie można cofnąć.
+          </p>
+          <p class="post-delete-modal__error" data-post-delete-error hidden aria-live="assertive"></p>
+          <div class="post-delete-modal__actions">
+            <button type="button" class="post-delete-modal__button" data-post-delete-cancel>Anuluj</button>
+            <button type="button" class="post-delete-modal__button post-delete-modal__button--danger" data-post-delete-confirm>Usuń</button>
+          </div>
+        </div>
+      </div>
+    </div>
   </div>
   {% if action_form and actions_on_bottom and cl.show_admin_actions %}{% admin_actions %}{% endif %}
 {% endblock %}

@@ -231,3 +231,118 @@ body.dark-theme .post-card {
     grid-template-columns: 1fr;
   }
 }
+
+body.post-delete-modal-open {
+  overflow: hidden;
+}
+
+.post-delete-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 1200;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+}
+
+.post-delete-modal[hidden] {
+  display: none;
+}
+
+.post-delete-modal__backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(15, 23, 42, 0.72);
+  backdrop-filter: blur(2px);
+}
+
+.post-delete-modal__dialog {
+  position: relative;
+  max-width: 420px;
+  width: 100%;
+  border-radius: 16px;
+  background: #0f172a;
+  border: 1px solid rgba(148, 163, 184, 0.35);
+  box-shadow: 0 24px 48px rgba(15, 23, 42, 0.45);
+  overflow: hidden;
+}
+
+body.dark-theme .post-delete-modal__dialog {
+  background: rgba(15, 17, 21, 0.96);
+  border-color: rgba(30, 41, 59, 0.55);
+}
+
+.post-delete-modal__content {
+  position: relative;
+  padding: 28px 32px 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  color: #e2e8f0;
+}
+
+.post-delete-modal__title {
+  margin: 0;
+  font-size: 20px;
+  font-weight: 700;
+  color: #f8fafc;
+}
+
+.post-delete-modal__description {
+  margin: 0;
+  line-height: 1.5;
+  font-size: 14px;
+}
+
+.post-delete-modal__description strong {
+  color: #f8fafc;
+}
+
+.post-delete-modal__error {
+  margin: 0;
+  padding: 12px 14px;
+  border-radius: 10px;
+  font-size: 13px;
+  background: rgba(248, 113, 113, 0.16);
+  color: #fecaca;
+  border: 1px solid rgba(248, 113, 113, 0.35);
+}
+
+.post-delete-modal__actions {
+  margin-top: 8px;
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
+.post-delete-modal__button {
+  border: 1px solid rgba(148, 163, 184, 0.35);
+  border-radius: 999px;
+  padding: 8px 18px;
+  font-size: 14px;
+  font-weight: 600;
+  background: rgba(148, 163, 184, 0.1);
+  color: #e2e8f0;
+  cursor: pointer;
+  transition: background 0.2s ease, color 0.2s ease, border 0.2s ease;
+}
+
+.post-delete-modal__button:hover {
+  background: rgba(148, 163, 184, 0.2);
+}
+
+.post-delete-modal__button:disabled {
+  opacity: 0.65;
+  cursor: wait;
+}
+
+.post-delete-modal__button--danger {
+  background: rgba(248, 113, 113, 0.25);
+  border-color: rgba(248, 113, 113, 0.45);
+  color: #fecaca;
+}
+
+.post-delete-modal__button--danger:hover:not(:disabled) {
+  background: rgba(248, 113, 113, 0.35);
+}
