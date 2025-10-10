@@ -70,7 +70,7 @@ def _video_metadata_from_reference(reference: Any) -> tuple[dict[str, int], dict
     return metadata, stored_flags
 
 
-def _probe_video_metadata(path: str) -> dict[str, int]:
+def _probe_video_metadata_ffprobe(path: str) -> dict[str, int]:
     if not path:
         return {}
     ffprobe_bin = shutil.which("ffprobe")
@@ -114,6 +114,205 @@ def _probe_video_metadata(path: str) -> dict[str, int]:
         if coerced:
             metadata[key] = coerced
     return metadata
+
+
+def _iter_mp4_atoms(payload: bytes):
+    offset = 0
+    length = len(payload)
+    while offset + 8 <= length:
+        size = int.from_bytes(payload[offset: offset + 4], "big")
+        atom_type = payload[offset + 4: offset + 8]
+        header = 8
+        if size == 1:
+            if offset + 16 > length:
+                break
+            size = int.from_bytes(payload[offset + 8: offset + 16], "big")
+            header = 16
+        elif size == 0:
+            size = length - offset
+        if size < header or offset + size > length:
+            break
+        start = offset + header
+        end = offset + size
+        yield atom_type.decode("latin1", errors="ignore"), payload[start:end]
+        offset += size if size else length
+
+
+def _read_mp4_atom(path: str, target: str) -> bytes:
+    target_bytes = target.encode("latin1")
+    try:
+        with open(path, "rb") as fh:
+            while True:
+                header = fh.read(8)
+                if len(header) < 8:
+                    return b""
+                size = int.from_bytes(header[:4], "big")
+                atom_type = header[4:8]
+                header_size = 8
+                if size == 1:
+                    extended = fh.read(8)
+                    if len(extended) < 8:
+                        return b""
+                    size = int.from_bytes(extended, "big")
+                    header_size = 16
+                elif size == 0:
+                    size = 0
+                if size and size < header_size:
+                    return b""
+                payload_size = size - header_size if size else 0
+                if atom_type == target_bytes:
+                    if size == 0:
+                        return fh.read()
+                    return fh.read(payload_size)
+                if size == 0:
+                    return b""
+                fh.seek(payload_size, os.SEEK_CUR)
+    except OSError:
+        return b""
+    return b""
+
+
+def _parse_mvhd(payload: bytes) -> tuple[int | None, int | None]:
+    if not payload:
+        return None, None
+    version = payload[0]
+    if version == 1:
+        if len(payload) < 32:
+            return None, None
+        timescale_offset = 20
+        duration_offset = 28
+        duration_size = 8
+    else:
+        if len(payload) < 20:
+            return None, None
+        timescale_offset = 12
+        duration_offset = 16
+        duration_size = 4
+    timescale = int.from_bytes(payload[timescale_offset: timescale_offset + 4], "big")
+    if duration_size == 8:
+        duration = int.from_bytes(payload[duration_offset: duration_offset + 8], "big")
+    else:
+        duration = int.from_bytes(payload[duration_offset: duration_offset + 4], "big")
+    return (timescale or None), (duration or None)
+
+
+def _parse_tkhd(payload: bytes) -> tuple[float | None, float | None]:
+    if not payload:
+        return None, None
+    version = payload[0]
+    if version == 1:
+        if len(payload) < 96:
+            return None, None
+        width_offset = 88
+        height_offset = 92
+    else:
+        if len(payload) < 84:
+            return None, None
+        width_offset = 76
+        height_offset = 80
+    width_fixed = int.from_bytes(payload[width_offset: width_offset + 4], "big")
+    height_fixed = int.from_bytes(payload[height_offset: height_offset + 4], "big")
+    width = width_fixed / 65536 if width_fixed else None
+    height = height_fixed / 65536 if height_fixed else None
+    return width, height
+
+
+def _parse_mdhd(payload: bytes) -> tuple[int | None, int | None]:
+    if not payload:
+        return None, None
+    version = payload[0]
+    if version == 1:
+        if len(payload) < 32:
+            return None, None
+        timescale_offset = 20
+        duration_offset = 24
+        duration_size = 8
+    else:
+        if len(payload) < 24:
+            return None, None
+        timescale_offset = 12
+        duration_offset = 16
+        duration_size = 4
+    timescale = int.from_bytes(payload[timescale_offset: timescale_offset + 4], "big")
+    if duration_size == 8:
+        duration = int.from_bytes(payload[duration_offset: duration_offset + 8], "big")
+    else:
+        duration = int.from_bytes(payload[duration_offset: duration_offset + 4], "big")
+    return (timescale or None), (duration or None)
+
+
+def _parse_hdlr(payload: bytes) -> str | None:
+    if not payload or len(payload) < 12:
+        return None
+    handler = payload[8:12]
+    return handler.decode("latin1", errors="ignore")
+
+
+def _parse_mdia(payload: bytes) -> tuple[str | None, int | None, int | None]:
+    handler = None
+    timescale = None
+    duration = None
+    for atom_type, atom_payload in _iter_mp4_atoms(payload):
+        if atom_type == "hdlr" and handler is None:
+            handler = _parse_hdlr(atom_payload)
+        elif atom_type == "mdhd" and timescale is None:
+            timescale, duration = _parse_mdhd(atom_payload)
+    return handler, timescale, duration
+
+
+def _parse_trak(payload: bytes) -> tuple[str | None, float | None, float | None, int | None, int | None]:
+    handler = None
+    width = None
+    height = None
+    timescale = None
+    duration = None
+    for atom_type, atom_payload in _iter_mp4_atoms(payload):
+        if atom_type == "tkhd" and (width is None or height is None):
+            width, height = _parse_tkhd(atom_payload)
+        elif atom_type == "mdia" and handler is None:
+            handler, timescale, duration = _parse_mdia(atom_payload)
+    return handler, width, height, timescale, duration
+
+
+def _probe_video_metadata_mp4(path: str) -> dict[str, int]:
+    moov_payload = _read_mp4_atom(path, "moov")
+    if not moov_payload:
+        return {}
+    width: float | None = None
+    height: float | None = None
+    duration_seconds: float | None = None
+    mvhd_timescale: int | None = None
+    mvhd_duration: int | None = None
+    for atom_type, payload in _iter_mp4_atoms(moov_payload):
+        if atom_type == "mvhd" and mvhd_timescale is None:
+            mvhd_timescale, mvhd_duration = _parse_mvhd(payload)
+        elif atom_type == "trak":
+            handler, tk_width, tk_height, timescale, track_duration = _parse_trak(payload)
+            if handler != "vide":
+                continue
+            if tk_width:
+                width = tk_width
+            if tk_height:
+                height = tk_height
+            if timescale and track_duration:
+                duration_seconds = track_duration / timescale
+    if duration_seconds is None and mvhd_timescale and mvhd_duration:
+        duration_seconds = mvhd_duration / mvhd_timescale if mvhd_timescale else None
+    metadata: dict[str, int] = {}
+    if width and width > 0:
+        metadata["width"] = max(1, int(round(width)))
+    if height and height > 0:
+        metadata["height"] = max(1, int(round(height)))
+    if duration_seconds and duration_seconds > 0:
+        metadata["duration"] = max(1, int(round(duration_seconds)))
+    return metadata
+
+
+def _probe_video_metadata(path: str) -> dict[str, int]:
+    metadata = _probe_video_metadata_ffprobe(path)
+    if metadata:
+        return metadata
+    return _probe_video_metadata_mp4(path)
 
 
 def _persist_video_metadata(pm, metadata: dict[str, int], stored_flags: dict[str, bool]) -> bool:
