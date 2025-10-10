@@ -973,13 +973,8 @@ def _build_user_prompt(
             " \"posted_at\": \"2024-06-09T10:32:00Z\"})."
             "Jeśli jest to strona www, podaj url media zdjęcie/video z artykułu"
         ),
-        (" Jeśli nie masz dopasowanego medium, zwróć pustą listę media."),
-        "Pole identyfikator (jeśli użyte) ma zawierać rzeczywistą wartość identyfikatora, a nie nazwę pola ani placeholder.",
         "Pole reference.source_locator musi zawierać dokładny link lub identyfikator wpisu źródłowego.",
-        (
-            "Jeśli korzystasz z wpisów Telegram, pamiętaj o zachowaniu sensu i chronologii całego wątku,"
-            " aby poprawnie oddać kontekst wydarzeń."
-        ),
+
         "Używaj wyłącznie angielskich nazw pól w formacie snake_case (ASCII, bez spacji i znaków diakrytycznych).",
         (
             "Jeśli media pochodzą z artykułu lub innego źródła, dołącz dostępne metadane"
@@ -1008,7 +1003,7 @@ def _build_user_prompt(
     headline_list = [h for h in (recent_headlines or []) if h]
     if headline_list:
         instructions.append(
-            "Unikaj tematów, które pokrywają się z nagłówkami wpisów z ostatnich 24 godzin (opublikowanych i utworzonych):"
+            "Unikaj tematów, które pokrywają się z nagłówkami wpisów z ostatnich opublikowanych:"
         )
         for idx, headline in enumerate(headline_list, 1):
             instructions.append(f"{idx}. {headline}")
@@ -1016,7 +1011,7 @@ def _build_user_prompt(
     avoid = avoid_texts or []
     if avoid:
         instructions.append(
-            "Unikaj powtarzania poniższych tekstów (to niedawne wpisy kanału lub poprzednie szkice, zmień fakty i sformułowania):"
+            "Unikaj powtarzania tematów:"
         )
         for idx, text in enumerate(avoid, 1):
             snippet = _shorten_for_prompt(text, width=220)
