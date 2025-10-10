@@ -881,7 +881,7 @@ def _extract_post_headline(text: str, *, max_length: int = 150) -> str:
 def _recent_post_headlines(
     channel: Channel,
     *,
-    max_items: int = 20,
+    max_items: int = 40,
     window: timedelta = timedelta(hours=24),
 ) -> list[str]:
     if max_items <= 0:
