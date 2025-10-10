@@ -1,0 +1,66 @@
+{% extends "admin/base_site.html" %}
+{% load i18n %}
+
+{% block extrahead %}
+  {{ block.super }}
+  {{ media }}
+{% endblock %}
+
+{% block content %}
+  <div id="content" class="content">
+    <h1>{{ title }}</h1>
+    <div id="content-main">
+      {% if form.errors %}
+        <p class="errornote">
+          {% blocktranslate count counter=form.errors|length %}Popraw zaznaczony błąd.{% plural %}Popraw zaznaczone błędy.{% endblocktranslate %}
+        </p>
+        {{ form.non_field_errors }}
+      {% endif %}
+      <form method="post" enctype="multipart/form-data" novalidate>
+        {% csrf_token %}
+        <fieldset class="module aligned">
+          <div class="form-row field-channel{% if form.channel.errors %} errors{% endif %}">
+            {{ form.channel.errors }}
+            <label for="{{ form.channel.id_for_label }}">{{ form.channel.label }}{% if form.channel.field.required %}*{% endif %}:</label>
+            {{ form.channel }}
+            {% if form.channel.help_text %}<p class="help">{{ form.channel.help_text }}</p>{% endif %}
+          </div>
+          <div class="form-row field-title{% if form.title.errors %} errors{% endif %}">
+            {{ form.title.errors }}
+            <label for="{{ form.title.id_for_label }}">{{ form.title.label }}{% if form.title.field.required %}*{% endif %}:</label>
+            {{ form.title }}
+            {% if form.title.help_text %}<p class="help">{{ form.title.help_text }}</p>{% endif %}
+          </div>
+          <div class="form-row field-summary{% if form.summary.errors %} errors{% endif %}">
+            {{ form.summary.errors }}
+            <label for="{{ form.summary.id_for_label }}">{{ form.summary.label }}{% if form.summary.field.required %}*{% endif %}:</label>
+            {{ form.summary }}
+            {% if form.summary.help_text %}<p class="help">{{ form.summary.help_text }}</p>{% endif %}
+          </div>
+          <div class="form-row field-text{% if form.text.errors %} errors{% endif %}">
+            {{ form.text.errors }}
+            <label for="{{ form.text.id_for_label }}">{{ form.text.label }}{% if form.text.field.required %}*{% endif %}:</label>
+            {{ form.text }}
+            {% if form.text.help_text %}<p class="help">{{ form.text.help_text }}</p>{% endif %}
+          </div>
+          <div class="form-row field-source_url{% if form.source_url.errors %} errors{% endif %}">
+            {{ form.source_url.errors }}
+            <label for="{{ form.source_url.id_for_label }}">{{ form.source_url.label }}{% if form.source_url.field.required %}*{% endif %}:</label>
+            {{ form.source_url }}
+            {% if form.source_url.help_text %}<p class="help">{{ form.source_url.help_text }}</p>{% endif %}
+          </div>
+          <div class="form-row field-attachments{% if form.attachments.errors %} errors{% endif %}">
+            {{ form.attachments.errors }}
+            <label for="{{ form.attachments.id_for_label }}">{{ form.attachments.label }}{% if form.attachments.field.required %}*{% endif %}:</label>
+            {{ form.attachments }}
+            {% if form.attachments.help_text %}<p class="help">{{ form.attachments.help_text }}</p>{% endif %}
+          </div>
+        </fieldset>
+        <div class="submit-row">
+          <a class="button cancel-link" href="{{ changelist_url }}">Anuluj</a>
+          <button type="submit" class="default">Wyślij do GPT</button>
+        </div>
+      </form>
+    </div>
+  </div>
+{% endblock %}
