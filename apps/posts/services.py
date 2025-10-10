@@ -5,40 +5,36 @@ import logging
 import mimetypes
 import os
 import random
-import random
+import re
+import subprocess
 import textwrap
 import uuid
+from collections.abc import Mapping
+from datetime import datetime, timedelta
 from html import unescape
 from html.parser import HTMLParser
 from pathlib import Path
-from urllib.parse import urlparse, urlunparse, unquote
-import re
+from typing import Any, Dict, Iterable, List, Optional
+from urllib.parse import unquote, urlparse, urlunparse
 
 import httpx
-from openai import (
-    OpenAI,
-    RateLimitError,
-    APIError,
-    APIConnectionError,
-    APITimeoutError,
-    BadRequestError,
-)
-
-from datetime import datetime, timedelta
+from dateutil import tz
+from django.conf import settings
+from django.db.models import Q
 from django.utils import timezone
 from django.utils.formats import date_format
-from django.conf import settings
-from telegram import Bot
+from openai import (
+    APIConnectionError,
+    APIError,
+    APITimeoutError,
+    BadRequestError,
+    OpenAI,
+    RateLimitError,
+)
 from rapidfuzz import fuzz
+from telegram import Bot
+
 from .models import Channel, ChannelSource, Post, PostMedia
-from dateutil import tz
-from typing import Any, Dict, List, Optional, Iterable
-from collections.abc import Mapping
-from django.db.models import Q
-
-import httpx
-
-import httpx
 
 
 logger = logging.getLogger(__name__)
@@ -2466,6 +2462,80 @@ def purge_cache():
             pm.cache_path = ""
             pm.save()
 
+def _extract_video_metadata(path: Path) -> dict[str, int]:
+    try:
+        result = subprocess.run(
+            [
+                "ffprobe",
+                "-v",
+                "error",
+                "-select_streams",
+                "v:0",
+                "-show_entries",
+                "stream=width,height,duration",
+                "-of",
+                "json",
+                path.as_posix(),
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except FileNotFoundError:
+        logger.debug("ffprobe not available, skipping metadata extraction for %s", path)
+        return {}
+    except subprocess.CalledProcessError as exc:
+        logger.warning("ffprobe failed for %s: %s", path, exc)
+        return {}
+
+    try:
+        payload = json.loads(result.stdout or "{}")
+    except json.JSONDecodeError:
+        logger.warning("Niepoprawny wynik ffprobe dla %s", path)
+        return {}
+
+    streams = payload.get("streams")
+    if not isinstance(streams, list):
+        return {}
+
+    stream: dict[str, Any] | None = None
+    for candidate in streams:
+        if isinstance(candidate, dict) and candidate.get("codec_type") == "video":
+            stream = candidate
+            break
+
+    if not stream:
+        return {}
+
+    metadata: dict[str, int] = {}
+    width = stream.get("width")
+    height = stream.get("height")
+    duration_value = stream.get("duration")
+    if duration_value is None:
+        format_section = payload.get("format")
+        if isinstance(format_section, dict):
+            duration_value = format_section.get("duration")
+
+    for key, value in ("width", width), ("height", height):
+        try:
+            parsed = int(value)
+        except (TypeError, ValueError):
+            continue
+        if parsed > 0:
+            metadata[key] = parsed
+
+    duration_int = 0
+    try:
+        if duration_value is not None:
+            duration_int = int(float(duration_value))
+    except (TypeError, ValueError):
+        duration_int = 0
+    if duration_int > 0:
+        metadata["duration"] = duration_int
+
+    return metadata
+
+
 def cache_media(pm: PostMedia):
     if pm.cache_path and os.path.exists(pm.cache_path):
         return pm.cache_path
@@ -2565,6 +2635,16 @@ def cache_media(pm: PostMedia):
             pm.reference_data = ref_data
             if "reference_data" not in update_fields:
                 update_fields.append("reference_data")
+
+    if pm.type == "video" and pm.cache_path:
+        metadata = _extract_video_metadata(Path(pm.cache_path))
+        if metadata:
+            ref_data = dict(pm.reference_data or {})
+            if ref_data.get("video_metadata") != metadata:
+                ref_data["video_metadata"] = metadata
+                pm.reference_data = ref_data
+                if "reference_data" not in update_fields:
+                    update_fields.append("reference_data")
 
     pm.save(update_fields=update_fields)
     return pm.cache_path
