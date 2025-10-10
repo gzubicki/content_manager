@@ -107,7 +107,14 @@
       {% else %}
         <a href="{{ post.reschedule_url }}" class="post-card__action--secondary">Zmień termin publikacji</a>
       {% endif %}
-      <a href="{{ post.delete_url }}" class="post-card__action--danger">Usuń</a>
+      <a
+        href="{{ post.delete_url }}"
+        class="post-card__action--danger"
+        data-delete-kind="{{ post.is_draft|yesno:'draft,wpis,wpis' }}"
+        data-delete-object="{{ post.is_draft|yesno:'draft,wpis,wpis' }} #{{ post.pk }} ({{ post.channel|escape }})"
+      >
+        Usuń
+      </a>
     </div>
     {% if action_checkbox_name and cl.show_admin_actions %}
     <label class="post-card__selection">

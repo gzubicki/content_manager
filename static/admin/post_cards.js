@@ -10,6 +10,18 @@
   let refreshTimer = null;
   let activeController = null;
   let loading = false;
+  let refreshPaused = false;
+
+  const deleteModal = document.querySelector("[data-post-delete-modal]");
+  const deleteTitle = deleteModal?.querySelector(".post-delete-modal__title");
+  const deleteObjectLabel = deleteModal?.querySelector("[data-post-delete-object]");
+  const deleteError = deleteModal?.querySelector("[data-post-delete-error]");
+  const deleteCancel = deleteModal?.querySelector("[data-post-delete-cancel]");
+  const deleteConfirm = deleteModal?.querySelector("[data-post-delete-confirm]");
+  const deleteBackdrop = deleteModal?.querySelector("[data-post-delete-dismiss]");
+  const deleteConfirmDefaultLabel = deleteConfirm?.textContent || "Usuń";
+  let deleteContext = null;
+  let escapeHandler = null;
 
   function readRefreshInterval(element) {
     const raw = parseInt(element.dataset.refreshIntervalMs || element.dataset.refreshInterval || "", 10);
@@ -116,6 +128,9 @@
 
   function scheduleNext() {
     clearTimer();
+    if (refreshPaused) {
+      return;
+    }
     refreshTimer = window.setTimeout(fetchCards, refreshDelay);
   }
 
@@ -179,6 +194,173 @@
     }
   }
 
+  function getCsrfToken() {
+    const input = form?.querySelector('input[name="csrfmiddlewaretoken"]');
+    return input?.value || "";
+  }
+
+  function resetDeleteModalState() {
+    if (!deleteModal) {
+      return;
+    }
+    if (deleteError) {
+      deleteError.textContent = "";
+      deleteError.hidden = true;
+    }
+    if (deleteConfirm) {
+      deleteConfirm.disabled = false;
+      deleteConfirm.textContent = deleteConfirmDefaultLabel;
+    }
+    if (deleteCancel) {
+      deleteCancel.disabled = false;
+    }
+  }
+
+  function closeDeleteModal() {
+    if (!deleteModal || !deleteContext) {
+      return;
+    }
+    if (deleteContext.isSubmitting) {
+      return;
+    }
+    deleteModal.hidden = true;
+    document.body.classList.remove("post-delete-modal-open");
+    if (escapeHandler) {
+      document.removeEventListener("keydown", escapeHandler, true);
+      escapeHandler = null;
+    }
+    const focusTarget = deleteContext.trigger;
+    deleteContext = null;
+    resetDeleteModalState();
+    refreshPaused = false;
+    if (!loading) {
+      scheduleNext();
+    }
+    if (focusTarget && typeof focusTarget.focus === "function") {
+      window.setTimeout(() => focusTarget.focus(), 0);
+    }
+  }
+
+  function mapKindToTitle(kind) {
+    if (kind === "draft") {
+      return "draftu";
+    }
+    if (kind === "wpis") {
+      return "wpisu";
+    }
+    return kind ? kind : "wpisu";
+  }
+
+  function mapKindToDescription(kind) {
+    if (kind === "draft") {
+      return "ten draft";
+    }
+    if (kind === "wpis") {
+      return "ten wpis";
+    }
+    return "wybrany wpis";
+  }
+
+  function openDeleteModal(trigger) {
+    if (!deleteModal) {
+      return;
+    }
+    const kind = (trigger.dataset.deleteKind || "").toLowerCase();
+    const objectLabel = trigger.dataset.deleteObject || mapKindToDescription(kind);
+    deleteContext = {
+      url: trigger.href,
+      kind,
+      trigger,
+    };
+    const titleSuffix = mapKindToTitle(kind);
+    if (deleteTitle && titleSuffix) {
+      deleteTitle.textContent = `Potwierdź usunięcie ${titleSuffix}`;
+    }
+    if (deleteObjectLabel) {
+      deleteObjectLabel.textContent = objectLabel;
+    }
+    resetDeleteModalState();
+    deleteModal.hidden = false;
+    document.body.classList.add("post-delete-modal-open");
+    refreshPaused = true;
+    clearTimer();
+    abortPendingRequest();
+    window.setTimeout(() => {
+      deleteConfirm?.focus();
+    }, 0);
+    escapeHandler = function (event) {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        closeDeleteModal();
+      }
+    };
+    document.addEventListener("keydown", escapeHandler, true);
+  }
+
+  function setDeleteLoadingState(isLoading) {
+    if (deleteContext) {
+      deleteContext.isSubmitting = isLoading;
+    }
+    if (deleteConfirm) {
+      deleteConfirm.disabled = isLoading;
+      deleteConfirm.textContent = isLoading ? "Usuwanie…" : deleteConfirmDefaultLabel;
+    }
+    if (deleteCancel) {
+      deleteCancel.disabled = isLoading;
+    }
+  }
+
+  async function submitDelete() {
+    if (!deleteContext || !deleteContext.url) {
+      return;
+    }
+    const token = getCsrfToken();
+    if (!token) {
+      if (deleteError) {
+        deleteError.textContent = "Brak tokenu CSRF – odśwież stronę i spróbuj ponownie.";
+        deleteError.hidden = false;
+      }
+      return;
+    }
+    setDeleteLoadingState(true);
+    if (deleteError) {
+      deleteError.textContent = "";
+      deleteError.hidden = true;
+    }
+    try {
+      const body = new URLSearchParams();
+      body.set("csrfmiddlewaretoken", token);
+      body.set("post", "yes");
+      const response = await fetch(deleteContext.url, {
+        method: "POST",
+        credentials: "same-origin",
+        headers: {
+          "X-Requested-With": "XMLHttpRequest",
+          "X-CSRFToken": token,
+        },
+        body,
+        redirect: "follow",
+      });
+      if (!response.ok) {
+        throw new Error(`Nie udało się usunąć (${response.status})`);
+      }
+      if (response.url && response.url.includes("/delete")) {
+        throw new Error("Serwer nie potwierdził usunięcia. Odśwież stronę i spróbuj ponownie.");
+      }
+      if (deleteContext) {
+        deleteContext.isSubmitting = false;
+      }
+      closeDeleteModal();
+      await fetchCards();
+    } catch (error) {
+      if (deleteError) {
+        deleteError.textContent = error?.message || "Nie udało się usunąć wpisu. Spróbuj ponownie.";
+        deleteError.hidden = false;
+      }
+      setDeleteLoadingState(false);
+    }
+  }
+
   form.addEventListener("change", (event) => {
     if (!grid.contains(event.target)) {
       return;
@@ -186,6 +368,29 @@
     if (event.target.matches(checkboxSelector(grid))) {
       updateActionSummary(grid);
     }
+  });
+
+  if (deleteModal) {
+    form.addEventListener("click", (event) => {
+      const trigger = event.target.closest(".post-card__action--danger");
+      if (!trigger || !grid.contains(trigger)) {
+        return;
+      }
+      event.preventDefault();
+      openDeleteModal(trigger);
+    });
+  }
+
+  deleteCancel?.addEventListener("click", () => {
+    closeDeleteModal();
+  });
+
+  deleteBackdrop?.addEventListener("click", () => {
+    closeDeleteModal();
+  });
+
+  deleteConfirm?.addEventListener("click", () => {
+    submitDelete();
   });
 
   window.addEventListener("beforeunload", () => {

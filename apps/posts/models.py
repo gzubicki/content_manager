@@ -92,6 +92,7 @@ class Post(models.Model):
     expires_at = models.DateTimeField("Wygasa", null=True, blank=True)
     message_id = models.BigIntegerField("ID wiadomości (tekst)", null=True, blank=True)
     source_metadata = models.JSONField("Metadane źródłowe", blank=True, default=dict)
+    published_at = models.DateTimeField("Opublikowano", null=True, blank=True)
 
     class Meta:
         verbose_name = "Wpis"
@@ -118,6 +119,13 @@ class ScheduledPost(Post):
         proxy = True
         verbose_name = "Pozycja harmonogramu"
         verbose_name_plural = "Harmonogram"
+
+
+class HistoryPost(Post):
+    class Meta:
+        proxy = True
+        verbose_name = "Historia wpisu"
+        verbose_name_plural = "Historia"
 
 
 class PostMedia(models.Model):
