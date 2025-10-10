@@ -1829,6 +1829,8 @@ def gpt_generate_post_payload(channel: Channel, article: dict[str, Any] | None =
     similarity_threshold = float(os.getenv("GPT_DUPLICATE_THRESHOLD", 0.9))
     headlines = _recent_post_headlines(channel)
 
+    last_failure_reason = ""
+
     for attempt in range(1, max_attempts + 1):
         system_prompt = _build_user_prompt(
             channel,
@@ -1846,7 +1848,8 @@ def gpt_generate_post_payload(channel: Channel, article: dict[str, Any] | None =
             },
         )
         if raw is None:
-            return None
+            last_failure_reason = "empty_response"
+            continue
         payload = _parse_gpt_payload(raw)
         if payload is None:
             logger.warning(
@@ -1854,7 +1857,8 @@ def gpt_generate_post_payload(channel: Channel, article: dict[str, Any] | None =
                 channel.id,
                 attempt,
             )
-            return None
+            last_failure_reason = "invalid_payload"
+            continue
         logger.info(
             "GPT draft response (channel=%s attempt=%s): %s",
             channel.id,
@@ -1867,7 +1871,13 @@ def gpt_generate_post_payload(channel: Channel, article: dict[str, Any] | None =
         if isinstance(post_data, dict):
             text = str(post_data.get("text") or "").strip()
         if not text:
-            return payload
+            logger.warning(
+                "GPT draft response (channel=%s attempt=%s) nie zawiera treści posta",
+                channel.id,
+                attempt,
+            )
+            last_failure_reason = "missing_text"
+            continue
 
         scores = _score_similar_texts(text, recent_texts)
         best_score = scores[0][0] if scores else 0.0
@@ -1883,8 +1893,13 @@ def gpt_generate_post_payload(channel: Channel, article: dict[str, Any] | None =
         )
         avoid_candidates = duplicates[:3] + [text]
         avoid_texts = _merge_avoid_texts(avoid_texts, avoid_candidates)
-
-    return payload
+    if last_failure_reason:
+        logger.warning(
+            "GPT draft generation (channel=%s) zwróciło pustą odpowiedź (%s)",
+            channel.id,
+            last_failure_reason,
+        )
+    return None
 
 def gpt_rewrite_text(channel: Channel, text: str, editor_prompt: str) -> str:
     channel_prompt = _channel_system_prompt(channel)

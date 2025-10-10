@@ -237,7 +237,14 @@ def task_gpt_generate_from_article(self, channel_id: int, article: dict[str, Any
     payload = services.gpt_generate_post_payload(ch, article=article)
     if payload is None:
         return 0
-    services.create_post_from_payload(ch, payload)
+    try:
+        services.create_post_from_payload(ch, payload)
+    except ValueError:
+        logger.exception(
+            "GPT article payload dla kanału %s nie zawiera wymaganych danych",
+            channel_id,
+        )
+        return 0
     return 1
 
 @shared_task
