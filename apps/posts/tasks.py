@@ -81,9 +81,8 @@ async def _publish_async(post: Post, medias):
         caption_text = post_text
     send_text_separately = text_has_content and not caption_text
     if medias:
-        im = []
+        prepared: list[dict[str, Any]] = []
         opened_files = []
-        media_records = []
         try:
             for index, m in enumerate(medias):
                 media = m.tg_file_id
@@ -96,48 +95,82 @@ async def _publish_async(post: Post, medias):
                         opened_files.append(media)
                 if not media:
                     continue
-                caption_kwargs = {}
+                caption_kwargs: dict[str, Any] = {}
                 if index == 0 and caption_text:
                     caption_kwargs["caption"] = caption_text
+
+                input_media = None
+                entry: dict[str, Any] = {
+                    "record": m,
+                    "media": media,
+                    "caption_kwargs": caption_kwargs,
+                }
+
                 if m.type == "photo":
-                    im.append(
-                        InputMediaPhoto(
-                            media=media,
-                            has_spoiler=m.has_spoiler,
-                            **caption_kwargs,
-                        )
+                    input_media = InputMediaPhoto(
+                        media=media,
+                        has_spoiler=m.has_spoiler,
+                        **caption_kwargs,
                     )
                 elif m.type == "video":
                     video_kwargs = await _video_input_kwargs(m)
-                    im.append(
-                        InputMediaVideo(
-                            media=media,
-                            has_spoiler=m.has_spoiler,
-                            **video_kwargs,
-                            **caption_kwargs,
-                        )
+                    entry["video_kwargs"] = video_kwargs
+                    input_media = InputMediaVideo(
+                        media=media,
+                        has_spoiler=m.has_spoiler,
+                        **video_kwargs,
+                        **caption_kwargs,
                     )
                 elif m.type == "doc":
-                    im.append(InputMediaDocument(media=media, **caption_kwargs))
+                    input_media = InputMediaDocument(media=media, **caption_kwargs)
                 else:
                     continue
-                media_records.append(m)
-            if im:
-                res = await bot.send_media_group(chat_id=chat, media=im)
-                sent_group_ids = [r.message_id for r in res]
-                if caption_text and sent_group_ids:
-                    text_message_id = sent_group_ids[0]
-                for record, message in zip(media_records, res):
-                    file_id = None
-                    if record.type == "photo" and getattr(message, "photo", None):
-                        file_id = message.photo[-1].file_id
-                    elif record.type == "video" and getattr(message, "video", None):
-                        file_id = message.video.file_id
-                    elif record.type == "doc" and getattr(message, "document", None):
-                        file_id = message.document.file_id
-                    if file_id and record.tg_file_id != file_id:
-                        record.tg_file_id = file_id
-                        await asyncio.to_thread(record.save, update_fields=["tg_file_id"])
+
+                entry["input_media"] = input_media
+                prepared.append(entry)
+
+            if prepared:
+                if len(prepared) == 1 and prepared[0]["record"].type == "video":
+                    video_entry = prepared[0]
+                    send_kwargs = dict(video_entry.get("caption_kwargs", {}))
+                    send_kwargs.update(video_entry.get("video_kwargs", {}))
+                    send_kwargs["has_spoiler"] = video_entry["record"].has_spoiler
+                    message = await bot.send_video(
+                        chat_id=chat,
+                        video=video_entry["media"],
+                        **send_kwargs,
+                    )
+                    sent_group_ids = [message.message_id]
+                    if caption_text:
+                        text_message_id = message.message_id
+                    video_obj = getattr(message, "video", None)
+                    file_id = getattr(video_obj, "file_id", None)
+                    if file_id and video_entry["record"].tg_file_id != file_id:
+                        video_entry["record"].tg_file_id = file_id
+                        await asyncio.to_thread(
+                            video_entry["record"].save, update_fields=["tg_file_id"]
+                        )
+                else:
+                    im = [entry["input_media"] for entry in prepared if entry.get("input_media")]
+                    if im:
+                        res = await bot.send_media_group(chat_id=chat, media=im)
+                        sent_group_ids = [r.message_id for r in res]
+                        if caption_text and sent_group_ids:
+                            text_message_id = sent_group_ids[0]
+                        for entry, message in zip(prepared, res):
+                            record = entry["record"]
+                            file_id = None
+                            if record.type == "photo" and getattr(message, "photo", None):
+                                file_id = message.photo[-1].file_id
+                            elif record.type == "video" and getattr(message, "video", None):
+                                file_id = message.video.file_id
+                            elif record.type == "doc" and getattr(message, "document", None):
+                                file_id = message.document.file_id
+                            if file_id and record.tg_file_id != file_id:
+                                record.tg_file_id = file_id
+                                await asyncio.to_thread(
+                                    record.save, update_fields=["tg_file_id"]
+                                )
         finally:
             for fh in opened_files:
                 try:

@@ -3,7 +3,7 @@ import os
 import tempfile
 from typing import Any
 from unittest import mock
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 from pathlib import Path
 
 import httpx
@@ -593,6 +593,63 @@ class MediaHandlingTest(TestCase):
 
         self.assertEqual(result, {"width": 640, "height": 360})
         mock_meta.assert_called_once_with(pm)
+
+    def test_publish_async_single_video_uses_send_video(self) -> None:
+        cache_dir = os.path.join(self._tmp_media.name, "cache")
+        os.makedirs(cache_dir, exist_ok=True)
+        cache_path = os.path.join(cache_dir, "video.mp4")
+        with open(cache_path, "wb") as fh:
+            fh.write(b"data")
+
+        self.post.text = "Opis"
+        self.post.save(update_fields=["text"])
+
+        pm = PostMedia.objects.create(
+            post=self.post,
+            type="video",
+            cache_path=cache_path,
+            has_spoiler=True,
+            reference_data={
+                "video_metadata": {"width": 1920, "height": 1080, "duration": 33}
+            },
+        )
+
+        pm.save = mock.Mock()
+
+        bot_mock = AsyncMock()
+        bot_mock.send_media_group = AsyncMock()
+        message_mock = mock.Mock()
+        message_mock.message_id = 42
+        message_video = mock.Mock()
+        message_video.file_id = "file123"
+        message_mock.video = message_video
+        bot_mock.send_video.return_value = message_mock
+
+        metadata = {"width": 1920, "height": 1080, "duration": 33}
+
+        async def _run_sync(func, *args, **kwargs):
+            return func(*args, **kwargs)
+
+        with mock.patch.dict(os.environ, {"DJANGO_ALLOW_ASYNC_UNSAFE": "true"}):
+            with patch("apps.posts.services._bot_for", return_value=bot_mock), patch(
+                "apps.posts.tasks._video_input_kwargs", new=AsyncMock(return_value=metadata)
+            ) as mock_kwargs, patch(
+                "apps.posts.tasks.asyncio.to_thread", side_effect=_run_sync
+            ):
+                result = asyncio.run(tasks._publish_async(self.post, [pm]))
+
+        self.assertEqual(result, ([42], 42))
+        bot_mock.send_video.assert_awaited_once()
+        bot_mock.send_media_group.assert_not_awaited()
+        sent_kwargs = bot_mock.send_video.await_args.kwargs
+        self.assertEqual(sent_kwargs["width"], 1920)
+        self.assertEqual(sent_kwargs["height"], 1080)
+        self.assertEqual(sent_kwargs["duration"], 33)
+        self.assertTrue(sent_kwargs["has_spoiler"])
+        self.assertEqual(sent_kwargs["caption"], "Opis")
+        mock_kwargs.assert_awaited_once_with(pm)
+        self.assertEqual(pm.tg_file_id, "file123")
+        pm.save.assert_called_once_with(update_fields=["tg_file_id"])
 
 
 class ArticleSourceMetadataTest(TestCase):
