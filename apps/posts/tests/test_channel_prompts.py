@@ -36,7 +36,7 @@ class ChannelPromptPropagationTest(TestCase):
         self.assertIn("reference.source_locator", system_prompt)
         self.assertIn("angielskich nazw pól", system_prompt)
         self.assertIn("Treść posta oraz wszystkie media muszą opisywać to samo wydarzenie", system_prompt)
-        self.assertIn("Jeśli korzystasz z wpisów Telegram", system_prompt)
+        self.assertIn("Jeśli media pochodzą z artykułu lub innego źródła", system_prompt)
         self.assertIn("Nie podawaj bezpośrednich linków", system_prompt)
         self.assertIn("poleceniach kanału", system_prompt)
         self.assertNotIn("linia1", system_prompt)
@@ -87,7 +87,7 @@ class ChannelPromptPropagationTest(TestCase):
         self.assertEqual(mock_gpt.call_count, 2)
 
         second_system_prompt = mock_gpt.call_args_list[1][0][0]
-        self.assertIn("Unikaj powtarzania poniższych tekstów", second_system_prompt)
+        self.assertIn("Unikaj powtarzania tematów", second_system_prompt)
         self.assertIn("Powtarzalny wpis o dronach", second_system_prompt)
 
     def test_channel_sources_are_listed_in_prompt(self):
@@ -147,7 +147,29 @@ class ChannelPromptPropagationTest(TestCase):
             services.gpt_generate_post_payload(self.channel)
 
         system_prompt, _ = mock_gpt.call_args[0][:2]
-        self.assertIn("nagłówkami wpisów z ostatnich 24 godzin", system_prompt)
+        self.assertIn("nagłówkami wpisów z ostatnich opublikowanych", system_prompt)
         self.assertIn("Nagłówek A", system_prompt)
         self.assertIn("Drugi post bez entera", system_prompt)
         self.assertNotIn("Stary nagłówek", system_prompt)
+
+    def test_recent_headlines_list_includes_up_to_40_entries(self):
+        for idx in range(41):
+            Post.objects.create(
+                channel=self.channel,
+                text=f"Nagłówek {idx}\nDalsza część wpisu",
+                status=Post.Status.PUBLISHED,
+                scheduled_at=timezone.now() - timedelta(minutes=idx),
+            )
+
+        with patch("apps.posts.services.gpt_generate_text") as mock_gpt:
+            mock_gpt.return_value = json.dumps({"post": {"text": "tekst"}, "media": []})
+            services.gpt_generate_post_payload(self.channel)
+
+        system_prompt, _ = mock_gpt.call_args[0][:2]
+        prefixes = tuple(f"{n}. " for n in range(1, 45))
+        enumerated_lines = [
+            line for line in system_prompt.splitlines() if line.strip().startswith(prefixes)
+        ]
+        self.assertEqual(40, len(enumerated_lines))
+        self.assertIn("Nagłówek 40", system_prompt)
+        self.assertNotIn("Nagłówek 0", system_prompt)
