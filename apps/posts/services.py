@@ -5,7 +5,7 @@ import logging
 import mimetypes
 import os
 import random
-import random
+import time
 import textwrap
 import uuid
 from html import unescape
@@ -35,11 +35,6 @@ from dateutil import tz
 from typing import Any, Dict, List, Optional, Iterable
 from collections.abc import Mapping
 from django.db.models import Q
-
-import httpx
-
-import httpx
-
 
 logger = logging.getLogger(__name__)
 
@@ -2496,24 +2491,60 @@ def cache_media(pm: PostMedia):
 
     if parsed.scheme in ("http", "https"):
         timeout_s = float(os.getenv("MEDIA_DOWNLOAD_TIMEOUT", 30))
-        try:
-            response = httpx.get(url, timeout=timeout_s, follow_redirects=True)
-            response.raise_for_status()
-        except httpx.HTTPStatusError as exc:
-            logger.warning(
-                "HTTP %s przy pobieraniu %s dla media %s",
-                exc.response.status_code,
-                url,
-                pm.id,
-            )
-            return pm.cache_path or ""
-        except httpx.RequestError as exc:
-            logger.warning(
-                "Błąd sieci przy pobieraniu %s dla media %s: %s",
-                url,
-                pm.id,
-                exc,
-            )
+        max_attempts = max(int(os.getenv("MEDIA_DOWNLOAD_RETRIES", 3)), 1)
+        retry_min_delay = max(float(os.getenv("MEDIA_DOWNLOAD_RETRY_MIN_DELAY", 2.0)), 0.0)
+        retry_max_delay = max(
+            float(os.getenv("MEDIA_DOWNLOAD_RETRY_MAX_DELAY", 6.0)), retry_min_delay
+        )
+
+        attempt = 0
+        response: httpx.Response | None = None
+        while attempt < max_attempts:
+            try:
+                response = httpx.get(url, timeout=timeout_s, follow_redirects=True)
+                response.raise_for_status()
+                break
+            except httpx.HTTPStatusError as exc:
+                status_code = exc.response.status_code
+                should_retry = (
+                    status_code == 403
+                    and attempt + 1 < max_attempts
+                )
+                logger.warning(
+                    "HTTP %s przy pobieraniu %s dla media %s (próba %s/%s)",
+                    status_code,
+                    url,
+                    pm.id,
+                    attempt + 1,
+                    max_attempts,
+                )
+                if not should_retry:
+                    return pm.cache_path or ""
+            except httpx.RequestError as exc:
+                logger.warning(
+                    "Błąd sieci przy pobieraniu %s dla media %s (próba %s/%s): %s",
+                    url,
+                    pm.id,
+                    attempt + 1,
+                    max_attempts,
+                    exc,
+                )
+                if attempt + 1 >= max_attempts:
+                    return pm.cache_path or ""
+            attempt += 1
+            if attempt < max_attempts:
+                delay = random.uniform(retry_min_delay, retry_max_delay)
+                logger.info(
+                    "Ponawiam pobieranie %s dla media %s po %.2f s (próba %s/%s)",
+                    url,
+                    pm.id,
+                    delay,
+                    attempt + 1,
+                    max_attempts,
+                )
+                time.sleep(delay)
+
+        if response is None:
             return pm.cache_path or ""
 
         content = response.content
