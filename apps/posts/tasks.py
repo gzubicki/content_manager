@@ -1,9 +1,11 @@
 import asyncio
 import logging
+import uuid
 from typing import Any
 
 from celery import shared_task
 from django.conf import settings
+from django.core.cache import cache
 from django.db import transaction
 from django.utils import timezone
 from telegram import InputMediaPhoto, InputMediaVideo, InputMediaDocument
@@ -18,21 +20,41 @@ from openai import RateLimitError, APIError, APIConnectionError, APITimeoutError
 logger = logging.getLogger(__name__)
 
 
-@shared_task
-def task_ensure_min_drafts():
+ENSURE_DRAFTS_LOCK_KEY = "posts:ensure_min_drafts:lock"
+ENSURE_DRAFTS_LOCK_TTL = 10 * 60  # 10 minut – powyżej interwału z Celery Beat
+
+
+@shared_task(bind=True)
+def task_ensure_min_drafts(task, force: bool = False):
+    task_id = getattr(getattr(task, "request", None), "id", None) or str(uuid.uuid4())
+    token = f"{task_id}:{timezone.now().timestamp()}"
+    acquired = force or cache.add(ENSURE_DRAFTS_LOCK_KEY, token, ENSURE_DRAFTS_LOCK_TTL)
+    if not acquired:
+        logger.debug(
+            "Pomijam ensure_min_drafts – inna instancja już pracuje (task_id=%s).",
+            task_id,
+        )
+        return {"queued": 0, "channels": 0, "skipped": True}
+
     queued = 0
     affected = 0
-    for channel_id, need in iter_missing_draft_requirements():
-        task_gpt_generate_for_channel.delay(channel_id, need)
-        queued += need
-        affected += 1
-    if affected:
-        logger.info(
-            "Queued %s GPT draft(s) for %s channel(s) via ensure_min_drafts.",
-            queued,
-            affected,
-        )
-    return {"queued": queued, "channels": affected}
+    try:
+        for channel_id, need in iter_missing_draft_requirements():
+            task_gpt_generate_for_channel.delay(channel_id, need)
+            queued += need
+            affected += 1
+        if affected:
+            logger.info(
+                "Queued %s GPT draft(s) for %s channel(s) via ensure_min_drafts.",
+                queued,
+                affected,
+            )
+        return {"queued": queued, "channels": affected, "skipped": False}
+    finally:
+        if not force:
+            current = cache.get(ENSURE_DRAFTS_LOCK_KEY)
+            if current == token:
+                cache.delete(ENSURE_DRAFTS_LOCK_KEY)
 
 @shared_task
 def task_housekeeping():
