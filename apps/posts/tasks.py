@@ -1,11 +1,15 @@
 import asyncio
+import json
 import logging
+import os
+import shutil
+import subprocess
 from typing import Any
 
 from celery import shared_task
 from django.db import transaction
 from django.utils import timezone
-from telegram import InputMediaPhoto, InputMediaVideo, InputMediaDocument
+from telegram import InputMediaDocument, InputMediaPhoto, InputMediaVideo
 from telegram.error import Forbidden
 
 from .models import Post, Channel
@@ -15,6 +19,154 @@ from openai import RateLimitError, APIError, APIConnectionError, APITimeoutError
 
 
 logger = logging.getLogger(__name__)
+
+
+def _coerce_positive_int(value: Any) -> int | None:
+    if value in (None, ""):
+        return None
+    try:
+        if isinstance(value, bool):
+            return None
+        if isinstance(value, (int, float)):
+            coerced = int(round(float(value)))
+        else:
+            coerced = int(round(float(str(value).strip())))
+    except (TypeError, ValueError):
+        return None
+    if coerced <= 0:
+        return None
+    return coerced
+
+
+def _video_metadata_from_reference(reference: Any) -> tuple[dict[str, int], dict[str, bool]]:
+    metadata: dict[str, int] = {}
+    stored_flags: dict[str, bool] = {}
+    if not isinstance(reference, dict):
+        return metadata, stored_flags
+
+    alias_map = {
+        "width": ("width", "w", "video_width"),
+        "height": ("height", "h", "video_height"),
+        "duration": ("duration", "length", "video_duration"),
+    }
+
+    candidates: list[tuple[str, dict[str, Any]]] = [("root", reference)]
+    for key in ("video_metadata", "video", "meta", "metadata", "properties"):
+        value = reference.get(key)
+        if isinstance(value, dict):
+            candidates.append((key, value))
+
+    for source_name, candidate in candidates:
+        for target_key, candidate_keys in alias_map.items():
+            if target_key in metadata:
+                continue
+            for candidate_key in candidate_keys:
+                coerced = _coerce_positive_int(candidate.get(candidate_key))
+                if coerced:
+                    metadata[target_key] = coerced
+                    stored_flags[target_key] = source_name == "video_metadata"
+                    break
+
+    return metadata, stored_flags
+
+
+def _probe_video_metadata(path: str) -> dict[str, int]:
+    if not path:
+        return {}
+    ffprobe_bin = shutil.which("ffprobe")
+    if not ffprobe_bin:
+        return {}
+    try:
+        completed = subprocess.run(
+            [
+                ffprobe_bin,
+                "-v",
+                "error",
+                "-select_streams",
+                "v:0",
+                "-show_entries",
+                "stream=width,height,duration",
+                "-of",
+                "json",
+                path,
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except (FileNotFoundError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
+        return {}
+
+    try:
+        payload = json.loads(completed.stdout or "{}")
+    except json.JSONDecodeError:
+        return {}
+
+    streams = payload.get("streams") or []
+    if not streams:
+        return {}
+    stream_info = streams[0] or {}
+
+    metadata: dict[str, int] = {}
+    for key in ("width", "height", "duration"):
+        coerced = _coerce_positive_int(stream_info.get(key))
+        if coerced:
+            metadata[key] = coerced
+    return metadata
+
+
+def _persist_video_metadata(pm, metadata: dict[str, int], stored_flags: dict[str, bool]) -> bool:
+    if not metadata:
+        return False
+    reference = pm.reference_data if isinstance(pm.reference_data, dict) else {}
+    existing_video_meta = {}
+    if isinstance(reference.get("video_metadata"), dict):
+        existing_video_meta = dict(reference["video_metadata"])
+
+    changed = False
+    new_video_meta = dict(existing_video_meta)
+    for key in ("width", "height", "duration"):
+        value = metadata.get(key)
+        if not value:
+            continue
+        already_stored = stored_flags.get(key, False) and existing_video_meta.get(key) == value
+        if already_stored:
+            continue
+        if new_video_meta.get(key) != value:
+            new_video_meta[key] = value
+            changed = True
+
+    if not changed:
+        return False
+
+    updated_reference = dict(reference)
+    updated_reference["video_metadata"] = new_video_meta
+    pm.reference_data = updated_reference
+    return True
+
+
+def _video_metadata_for_media(pm) -> tuple[dict[str, int], bool]:
+    metadata, stored_flags = _video_metadata_from_reference(pm.reference_data)
+
+    needs_probe = False
+    for key in ("width", "height"):
+        if not metadata.get(key):
+            needs_probe = True
+            break
+    if not metadata.get("duration"):
+        needs_probe = True
+
+    if needs_probe and pm.cache_path and os.path.exists(pm.cache_path):
+        probed = _probe_video_metadata(pm.cache_path)
+        for key in ("width", "height", "duration"):
+            value = probed.get(key)
+            if value and metadata.get(key) != value:
+                metadata[key] = value
+                stored_flags[key] = False
+
+    changed = _persist_video_metadata(pm, metadata, stored_flags)
+    return metadata, changed
 
 
 @shared_task
@@ -104,13 +256,23 @@ async def _publish_async(post: Post, medias):
                         )
                     )
                 elif m.type == "video":
+                    video_kwargs: dict[str, Any] = {}
+                    metadata, metadata_changed = _video_metadata_for_media(m)
+                    for key in ("width", "height", "duration"):
+                        value = metadata.get(key)
+                        if value:
+                            video_kwargs[key] = value
+                    video_kwargs["supports_streaming"] = True
                     im.append(
                         InputMediaVideo(
                             media=media,
                             has_spoiler=m.has_spoiler,
+                            **video_kwargs,
                             **caption_kwargs,
                         )
                     )
+                    if metadata_changed:
+                        setattr(m, "_reference_data_dirty", True)
                 elif m.type == "doc":
                     im.append(InputMediaDocument(media=media, **caption_kwargs))
                 else:
@@ -190,6 +352,10 @@ def publish_post(post_id: int):
             exc_info=exc,
         )
         return None
+    dirty_medias = [m for m in medias if getattr(m, "_reference_data_dirty", False)]
+    for media in dirty_medias:
+        media.save(update_fields=["reference_data"])
+        setattr(media, "_reference_data_dirty", False)
     if result is None:
         _restore_status_after_failure(post)
         services.mark_publication_failed(post, reason="missing_bot")
