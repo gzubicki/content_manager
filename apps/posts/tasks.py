@@ -3,6 +3,7 @@ import logging
 from typing import Any
 
 from celery import shared_task
+from django.conf import settings
 from django.db import transaction
 from django.utils import timezone
 from telegram import InputMediaPhoto, InputMediaVideo, InputMediaDocument
@@ -36,6 +37,13 @@ def task_ensure_min_drafts():
 @shared_task
 def task_housekeeping():
     Post.objects.filter(status="DRAFT", expires_at__lt=timezone.now()).delete()
+    ttl_days = int(getattr(settings, "PUBLISHED_POST_TTL_DAYS", 0) or 0)
+    if ttl_days > 0:
+        cutoff = timezone.now() - timezone.timedelta(days=ttl_days)
+        Post.objects.filter(
+            status=Post.Status.PUBLISHED,
+            published_at__lt=cutoff,
+        ).delete()
     services.purge_cache()
 
 @shared_task
@@ -203,7 +211,14 @@ def publish_post(post_id: int):
     post.message_id = msg_id
     post.dupe_score = services.compute_dupe(post)
     post.status = "PUBLISHED"
-    post.save()
+    post.published_at = now
+    post.save(update_fields=[
+        "status",
+        "scheduled_at",
+        "dupe_score",
+        "message_id",
+        "published_at",
+    ])
     services.mark_publication_completed(
         post,
         message_id=msg_id,

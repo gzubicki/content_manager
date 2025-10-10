@@ -29,7 +29,7 @@ from django.utils.translation import gettext, ngettext
 from django.contrib.admin.templatetags.admin_urls import admin_urlname
 
 from . import services
-from .models import Channel, ChannelSource, DraftPost, Post, PostMedia, ScheduledPost
+from .models import Channel, ChannelSource, DraftPost, HistoryPost, Post, PostMedia, ScheduledPost
 from .tasks import (
     task_gpt_generate_for_channel,
     task_gpt_generate_from_article,
@@ -85,6 +85,9 @@ def guess_media_type(name: str, content_type: str = "") -> str:
         return "video"
     return "doc"
 
+
+
+ADMIN_PAGE_SIZE = 20
 
 
 class RescheduleForm(forms.Form):
@@ -274,6 +277,7 @@ class ChannelSourceInline(admin.TabularInline):
 @admin.register(Channel)
 class ChannelAdmin(admin.ModelAdmin):
     form = ChannelAdminForm
+    list_per_page = ADMIN_PAGE_SIZE
     list_display = ("id","name","slug","tg_channel_id","language","draft_target_count")
     search_fields = ("name","slug","tg_channel_id")
     actions = ["act_fill_to_target","act_gpt_fill_missing"]
@@ -379,6 +383,7 @@ class GptDraftRequestForm(forms.Form):
 
 class BasePostAdmin(admin.ModelAdmin):
     form = PostForm
+    list_per_page = ADMIN_PAGE_SIZE
     list_display = ("id","channel","status","scheduled_at","created_at","dupe_score","short")
     list_filter = ("channel","status","schedule_mode")
     actions = ["act_fill_to_target","act_approve","act_schedule","act_publish_now","act_delete"]
@@ -1137,8 +1142,42 @@ class ScheduledPostAdmin(BasePostAdmin):
         return redirect(self._changelist_url())
 
 
+@admin.register(HistoryPost)
+class HistoryPostAdmin(BasePostAdmin):
+    change_list_template = "admin/posts/post_history_list.html"
+    list_display = (
+        "id",
+        "channel",
+        "published_display",
+        "schedule_mode",
+        "dupe_score",
+        "short",
+    )
+    list_filter = ("channel", "schedule_mode")
+    ordering = ("-published_at", "-id")
+    actions = ["act_delete"]
+    date_hierarchy = "published_at"
+    cards_refresh_interval_ms = 0
+
+    def filter_queryset(self, qs):
+        return qs.filter(status=Post.Status.PUBLISHED)
+
+    def has_add_permission(self, request):
+        return False
+
+    @admin.display(ordering="published_at", description="Opublikowano")
+    def published_display(self, obj: Post) -> str:
+        dt = obj.published_at or obj.scheduled_at or obj.created_at
+        if not dt:
+            return "—"
+        if timezone.is_naive(dt):
+            return date_format(dt, "d.m.Y H:i")
+        return date_format(timezone.localtime(dt), "d.m.Y H:i")
+
+
 @admin.register(PostMedia)
 class PostMediaAdmin(admin.ModelAdmin):
+    list_per_page = ADMIN_PAGE_SIZE
     list_display = (
         "id",
         "preview",

@@ -34,6 +34,7 @@ class PublishMetadataTest(TestCase):
         post.refresh_from_db()
         self.assertEqual(post.status, Post.Status.PUBLISHED)
         self.assertIsNotNone(post.scheduled_at)
+        self.assertIsNotNone(post.published_at)
         self.assertEqual(post.dupe_score, 0.42)
 
         publication = post.source_metadata.get("publication", {})
