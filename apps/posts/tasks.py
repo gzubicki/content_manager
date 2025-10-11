@@ -249,14 +249,38 @@ def publish_post(post_id: int):
     )
     return {"group": sent_group_ids, "text": msg_id}
 
-@shared_task(bind=True,
-             autoretry_for=(APIError, APIConnectionError, APITimeoutError, RateLimitError),
-             retry_backoff=True, retry_jitter=True,
-             retry_kwargs={"max_retries": 6})
+@shared_task(
+    bind=True,
+    autoretry_for=(APIError, APIConnectionError, APITimeoutError, RateLimitError),
+    retry_backoff=True,
+    retry_jitter=True,
+    retry_kwargs={"max_retries": 6},
+)
 def task_gpt_generate_for_channel(self, channel_id: int, count: int = 1):
     ch = Channel.objects.get(id=channel_id)
+
+    # Zabezpieczenie przed nadprodukcją draftów w sytuacjach, gdy zadanie zostało
+    # uruchomione z zawyżonym parametrem ``count`` (np. w wyniku wyścigu lub
+    # ponownego zlecenia).
+    try:
+        requested = max(int(count), 0)
+    except (TypeError, ValueError):  # pragma: no cover - defensywne
+        requested = 0
+
+    if requested <= 0:
+        return 0
+
+    target = max(int(getattr(ch, "draft_target_count", 0) or 0), 0)
+    if target:
+        current = ch.posts.filter(status=Post.Status.DRAFT).count()
+        remaining = max(target - current, 0)
+        requested = min(requested, remaining)
+
+    if requested <= 0:
+        return 0
+
     added = 0
-    for _ in range(count):
+    for _ in range(requested):
         payload = services.gpt_new_draft(ch)
         if payload is None:
             # np. insufficient_quota – przerwij grzecznie, bez wyjątku
