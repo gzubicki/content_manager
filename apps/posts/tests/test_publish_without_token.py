@@ -90,3 +90,35 @@ class PublishWithoutTokenTest(TestCase):
         self.assertIsNone(post.message_id)
         self.assertIsNone(result)
         self.assertEqual(post.source_metadata.get("publication", {}).get("status"), "failed")
+
+    def test_publish_handles_unexpected_error(self):
+        channel = Channel.objects.create(
+            name="Test channel",
+            slug="test",
+            tg_channel_id="@test",
+            bot_token="123",
+        )
+        post = Post.objects.create(
+            channel=channel,
+            text="Hello world",
+            status="SCHEDULED",
+            scheduled_at=timezone.now(),
+        )
+
+        with patch("apps.posts.tasks.asyncio.run", side_effect=RuntimeError("boom")) as mock_run, \
+             patch("apps.posts.tasks.logger.exception") as mock_exception, \
+             patch("apps.posts.tasks.services.compute_dupe") as mock_compute:
+            result = tasks.publish_post(post.id)
+
+        mock_run.assert_called_once()
+        mock_compute.assert_not_called()
+        mock_exception.assert_called_once()
+
+        post.refresh_from_db()
+        self.assertEqual(post.status, "SCHEDULED")
+        self.assertIsNone(post.message_id)
+        self.assertIsNone(result)
+        self.assertEqual(
+            post.source_metadata.get("publication", {}).get("error"),
+            "unexpected_error",
+        )

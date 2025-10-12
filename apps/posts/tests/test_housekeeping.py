@@ -45,3 +45,47 @@ class HousekeepingTaskTest(TestCase):
         self.assertFalse(Post.objects.filter(id=stale_post.id).exists())
         self.assertTrue(Post.objects.filter(id=recent_post.id).exists())
         self.assertFalse(Post.objects.filter(id=expired_draft.id).exists())
+
+    @override_settings(STALE_SCHEDULE_GRACE_MINUTES=60)
+    @patch("apps.posts.tasks.services.purge_cache")
+    def test_moves_stale_scheduled_posts_back_to_drafts(self, purge_cache_mock):
+        now = timezone.now()
+        stale_scheduled = Post.objects.create(
+            channel=self.channel,
+            text="stale",
+            status=Post.Status.SCHEDULED,
+            scheduled_at=now - timezone.timedelta(hours=3),
+        )
+        stale_publishing = Post.objects.create(
+            channel=self.channel,
+            text="publishing",
+            status=Post.Status.PUBLISHING,
+            scheduled_at=now - timezone.timedelta(hours=2),
+        )
+        fresh_post = Post.objects.create(
+            channel=self.channel,
+            text="fresh",
+            status=Post.Status.SCHEDULED,
+            scheduled_at=now - timezone.timedelta(minutes=15),
+        )
+
+        task_housekeeping()
+
+        purge_cache_mock.assert_called_once()
+
+        stale_scheduled.refresh_from_db()
+        stale_publishing.refresh_from_db()
+        fresh_post.refresh_from_db()
+
+        self.assertEqual(stale_scheduled.status, Post.Status.DRAFT)
+        self.assertIsNone(stale_scheduled.scheduled_at)
+        self.assertIsNotNone(stale_scheduled.expires_at)
+        self.assertEqual(
+            stale_scheduled.source_metadata.get("publication", {}).get("error"),
+            "stale_schedule",
+        )
+
+        self.assertEqual(stale_publishing.status, Post.Status.DRAFT)
+        self.assertIsNone(stale_publishing.scheduled_at)
+
+        self.assertEqual(fresh_post.status, Post.Status.SCHEDULED)

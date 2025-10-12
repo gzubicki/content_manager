@@ -58,14 +58,46 @@ def task_ensure_min_drafts(task, force: bool = False):
 
 @shared_task
 def task_housekeeping():
-    Post.objects.filter(status="DRAFT", expires_at__lt=timezone.now()).delete()
+    now = timezone.now()
+    Post.objects.filter(status="DRAFT", expires_at__lt=now).delete()
     ttl_days = int(getattr(settings, "PUBLISHED_POST_TTL_DAYS", 0) or 0)
     if ttl_days > 0:
-        cutoff = timezone.now() - timezone.timedelta(days=ttl_days)
+        cutoff = now - timezone.timedelta(days=ttl_days)
         Post.objects.filter(
             status=Post.Status.PUBLISHED,
             published_at__lt=cutoff,
         ).delete()
+
+    grace_minutes = int(getattr(settings, "STALE_SCHEDULE_GRACE_MINUTES", 0) or 0)
+    if grace_minutes > 0:
+        stale_cutoff = now - timezone.timedelta(minutes=grace_minutes)
+        stale_posts = list(
+            Post.objects.filter(
+                status__in=(Post.Status.SCHEDULED, Post.Status.PUBLISHING),
+                scheduled_at__isnull=False,
+                scheduled_at__lt=stale_cutoff,
+            ).select_related("channel")
+        )
+        if stale_posts:
+            for post in stale_posts:
+                previous_status = post.status
+                post.status = Post.Status.DRAFT
+                post.scheduled_at = None
+                post.expires_at = None
+                post.message_id = None
+                post.save()
+                services.mark_publication_failed(post, reason="stale_schedule")
+                logger.warning(
+                    (
+                        "Przeniesiono post %s z kanału %s ze statusu %s do draftów "
+                        "po przekroczeniu limitu %s minut na publikację."
+                    ),
+                    post.id,
+                    post.channel_id,
+                    previous_status,
+                    grace_minutes,
+                )
+
     services.purge_cache()
 
 @shared_task
@@ -216,6 +248,18 @@ def publish_post(post_id: int):
             post.id,
             post.channel_id,
             getattr(post.channel, "slug", None) or post.channel.tg_channel_id,
+            exc,
+            exc_info=exc,
+        )
+        return None
+    except Exception as exc:
+        coroutine.close()
+        _restore_status_after_failure(post)
+        services.mark_publication_failed(post, reason="unexpected_error")
+        logger.exception(
+            "Unexpected error while publishing post %s to channel %s: %s",
+            post.id,
+            post.channel_id,
             exc,
             exc_info=exc,
         )
