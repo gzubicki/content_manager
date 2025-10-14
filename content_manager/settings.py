@@ -1,5 +1,6 @@
 import os
 from pathlib import Path
+from urllib.parse import urlsplit, urlunsplit
 
 import dj_database_url
 from django.utils.translation import gettext_lazy as _
@@ -80,7 +81,38 @@ STORAGES = {
 
 MEDIA_URL = "/media/"
 MEDIA_ROOT = Path(os.getenv("MEDIA_ROOT", BASE_DIR / "media"))
-DATABASES = {"default": dj_database_url.parse(os.getenv("DATABASE_URL", "sqlite:///db.sqlite3"))}
+def _normalize_database_url(url: str) -> str:
+    if not url:
+        return url
+
+    alias_map = {
+        "postgresql+asyncpg": "postgresql",
+        "postgres+asyncpg": "postgresql",
+        "postgresql+psycopg": "postgresql",
+        "postgresql+psycopg2": "postgresql",
+        "postgres+psycopg": "postgresql",
+        "postgres+psycopg2": "postgresql",
+    }
+
+    split_url = urlsplit(url)
+    normalized_scheme = alias_map.get(split_url.scheme, split_url.scheme)
+    if normalized_scheme == split_url.scheme:
+        return url
+
+    return urlunsplit((
+        normalized_scheme,
+        split_url.netloc,
+        split_url.path,
+        split_url.query,
+        split_url.fragment,
+    ))
+
+
+DATABASES = {
+    "default": dj_database_url.parse(
+        _normalize_database_url(os.getenv("DATABASE_URL", "sqlite:///db.sqlite3"))
+    )
+}
 
 CELERY_BROKER_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
 CELERY_RESULT_BACKEND = CELERY_BROKER_URL
