@@ -988,7 +988,7 @@ def _build_user_prompt(
     headline_list = [h for h in (recent_headlines or []) if h]
     if headline_list:
         instructions.append(
-            "Unikaj tematów, które pokrywają się z nagłówkami wpisów z ostatnich opublikowanych:"
+            "nie powielaj tematów:"
         )
         for idx, headline in enumerate(headline_list, 1):
             instructions.append(f"{idx}. {headline}")
@@ -996,7 +996,7 @@ def _build_user_prompt(
     avoid = avoid_texts or []
     if avoid:
         instructions.append(
-            "Unikaj powtarzania tematów:"
+            "nie powielaj tematów:"
         )
         for idx, text in enumerate(avoid, 1):
             snippet = _shorten_for_prompt(text, width=220)
