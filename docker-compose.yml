@@ -54,7 +54,7 @@ services:
       - .:/app
       - media:/var/app/media
       - resolver:/var/app/resolver
-    command: celery -A content_manager worker -l info -c 2
+    command: celery -A content_manager worker -l info -c 1
     environment:
       SERVICE_ROLE: worker
       CELERY_WORKER_PREFETCH_MULTIPLIER: "1"
