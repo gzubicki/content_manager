@@ -5,7 +5,7 @@ from django.utils import timezone
 
 from apps.posts import tasks
 from apps.posts.models import Channel, Post
-from telegram.error import Forbidden
+from telegram.error import Forbidden, NetworkError
 
 
 class PublishWithoutTokenTest(TestCase):
@@ -122,3 +122,38 @@ class PublishWithoutTokenTest(TestCase):
             post.source_metadata.get("publication", {}).get("error"),
             "unexpected_error",
         )
+
+    def test_publish_handles_request_entity_too_large(self):
+        channel = Channel.objects.create(
+            name="Test channel",
+            slug="test",
+            tg_channel_id="@test",
+            bot_token="123",
+        )
+        post = Post.objects.create(
+            channel=channel,
+            text="Hello world",
+            status=Post.Status.SCHEDULED,
+            scheduled_at=timezone.now(),
+        )
+
+        error = NetworkError("Request Entity Too Large")
+
+        with patch("apps.posts.tasks.asyncio.run", side_effect=error) as mock_run, \
+             patch("apps.posts.tasks.logger.error") as mock_error, \
+             patch("apps.posts.tasks.services.compute_dupe") as mock_compute:
+            result = tasks.publish_post(post.id)
+
+        mock_run.assert_called_once()
+        mock_compute.assert_not_called()
+        mock_error.assert_called_once()
+
+        post.refresh_from_db()
+        self.assertEqual(post.status, Post.Status.DRAFT)
+        self.assertIsNone(post.scheduled_at)
+        self.assertIsNone(post.message_id)
+        self.assertIsNotNone(post.expires_at)
+        metadata = post.source_metadata.get("publication", {})
+        self.assertEqual(metadata.get("status"), "failed")
+        self.assertEqual(metadata.get("error"), "request_entity_too_large")
+        self.assertIsNone(result)
