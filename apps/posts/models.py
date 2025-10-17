@@ -9,8 +9,6 @@ class Channel(models.Model):
     # styl/limity
     language = models.CharField("Język", max_length=8, default="pl")
     max_chars = models.IntegerField("Maks. liczba znaków", default=1000)
-    emoji_min = models.IntegerField("Min. liczba emoji", default=1)
-    emoji_max = models.IntegerField("Maks. liczba emoji", default=6)
     footer_text = models.TextField("Stopka (2 linie)", default="🇵🇱 t.me/sztuka_wojny\n💬 @sztukawojny")
     no_links_in_text = models.BooleanField("Bez linków w treści", default=True)
     auto_blur_default = models.BooleanField("Domyślny blur (spoiler)", default=True)
