@@ -1,5 +1,6 @@
 import os
 from pathlib import Path
+from urllib.parse import urlsplit, urlunsplit
 
 import dj_database_url
 from django.utils.translation import gettext_lazy as _
@@ -80,7 +81,50 @@ STORAGES = {
 
 MEDIA_URL = "/media/"
 MEDIA_ROOT = Path(os.getenv("MEDIA_ROOT", BASE_DIR / "media"))
-DATABASES = {"default": dj_database_url.parse(os.getenv("DATABASE_URL", "sqlite:///db.sqlite3"))}
+def _database_config_from_env() -> dict:
+    """Zwraca konfigurację bazy danych ze zmiennej środowiskowej.
+
+    Obsługujemy również schematy zawierające nazwę sterownika (np.
+    ``postgresql+asyncpg``), które nie są rozpoznawane przez ``dj_database_url``.
+    W takich przypadkach sprowadzamy schemat do formy wspieranej przez Django,
+    jednocześnie zachowując domyślny silnik bazodanowy.
+    """
+
+    database_url = os.getenv("DATABASE_URL", "sqlite:///db.sqlite3")
+    split = urlsplit(database_url)
+
+    if not split.scheme:
+        return dj_database_url.parse(database_url)
+
+    # Rozpoznaj schematy w stylu ``postgresql+asyncpg``.
+    if "+" in split.scheme:
+        base_scheme, driver = split.scheme.split("+", 1)
+    else:
+        base_scheme, driver = split.scheme, None
+
+    normalized_scheme = base_scheme
+    engine_override = None
+
+    if base_scheme in {"postgresql", "postgresql2", "postgresql_psycopg2"}:
+        normalized_scheme = "postgres"
+        engine_override = "django.db.backends.postgresql"
+    elif base_scheme == "postgres":
+        engine_override = "django.db.backends.postgresql"
+
+    rebuilt_url = urlunsplit((normalized_scheme, split.netloc, split.path, split.query, split.fragment))
+    config = dj_database_url.parse(rebuilt_url)
+
+    # Sterownik ``asyncpg`` nadal korzysta z silnika Django dla PostgreSQL.
+    if driver == "asyncpg" and engine_override is None:
+        engine_override = "django.db.backends.postgresql"
+
+    if engine_override:
+        config["ENGINE"] = engine_override
+
+    return config
+
+
+DATABASES = {"default": _database_config_from_env()}
 
 CELERY_BROKER_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
 CELERY_RESULT_BACKEND = CELERY_BROKER_URL
