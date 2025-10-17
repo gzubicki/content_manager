@@ -20,6 +20,31 @@ fi
 
 docker compose -f docker-compose.prod.yml pull
 docker compose -f docker-compose.prod.yml up -d
+
+wait_for_db() {
+  local max_attempts=${1:-30}
+  local sleep_seconds=${2:-2}
+  local attempt=1
+
+  echo "⏳ Czekam na bazę danych (maks ${max_attempts} prób)…"
+  while [ "$attempt" -le "$max_attempts" ]; do
+    if docker compose -f docker-compose.prod.yml exec -T db \
+      sh -c 'pg_isready -U "${POSTGRES_USER:-postgres}" -d "${POSTGRES_DB:-postgres}"' \
+        >/dev/null 2>&1; then
+      echo "✅ Baza danych gotowa (próba ${attempt})."
+      return 0
+    fi
+
+    attempt=$((attempt + 1))
+    sleep "$sleep_seconds"
+  done
+
+  echo "❌ Baza danych nie wystartowała w oczekiwanym czasie." >&2
+  exit 1
+}
+
+wait_for_db
+
 docker compose -f docker-compose.prod.yml run --rm web python manage.py migrate
 docker image prune -f
 echo "✅ Deploy OK: $IMAGE"
