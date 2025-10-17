@@ -34,14 +34,14 @@ services:
 
   web:
     <<: *app
-    command: gunicorn content_manager.wsgi:application -b 0.0.0.0:8000 -w 3 --timeout 120
+    command: gunicorn content_manager.wsgi:application -b 0.0.0.0:8000 -w 1 --timeout 120
     ports: [ "127.0.0.1:8000:8000" ]  # reverse-proxy nginx na hoście
     environment:
       SERVICE_ROLE: web
 
   worker:
     <<: *app
-    command: celery -A content_manager worker -l info -c 2
+    command: celery -A content_manager worker -l info -c 1
     environment:
       SERVICE_ROLE: worker
       CELERY_WORKER_PREFETCH_MULTIPLIER: "1"

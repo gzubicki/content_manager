@@ -179,6 +179,9 @@ DATABASES = {"default": _database_config_from_env()}
 
 CELERY_BROKER_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
 CELERY_RESULT_BACKEND = CELERY_BROKER_URL
+# Wymuszamy pojedynczy wątek/worker, aby zadania były zawsze wykonywane sekwencyjnie.
+CELERY_WORKER_POOL = "solo"
+CELERY_WORKER_CONCURRENCY = 1
 
 
 
