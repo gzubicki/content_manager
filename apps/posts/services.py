@@ -525,7 +525,6 @@ _IDENTIFIER_KEY_ALIASES = {
 }
 
 _REQUIRED_OPENAI_TOOL = "web_search"
-_OPTIONAL_OPENAI_TOOLS = {"image_generation"}
 
 
 def _client():
@@ -602,15 +601,7 @@ def _ensure_internet_tools(payload: dict[str, Any]) -> dict[str, Any]:
 
 def _responses_payload_variants(payload: dict[str, Any]) -> list[dict[str, Any]]:
     primary = _ensure_internet_tools(payload)
-    variants: list[dict[str, Any]] = [primary]
-
-    tools = primary.get("tools", [])
-    fallback_tools = [tool for tool in tools if tool.get("type") not in _OPTIONAL_OPENAI_TOOLS]
-    if fallback_tools and len(fallback_tools) != len(tools):
-        fallback_payload = dict(primary)
-        fallback_payload["tools"] = fallback_tools
-        variants.append(fallback_payload)
-    return variants
+    return [primary]
 
 
 def _call_openai_responses(client: OpenAI, payload: dict[str, Any], *, context: dict[str, Any] | None = None):
@@ -949,6 +940,95 @@ def _merge_avoid_texts(existing: list[str], new_items: Iterable[str], *, limit: 
     return merged
 
 
+def _sanitize_headline(value: str) -> str:
+    cleaned = re.sub(r"[^\w\s-]", " ", value or "", flags=re.UNICODE)
+    cleaned = cleaned.replace("_", " ")
+    collapsed = re.sub(r"\s+", " ", cleaned).strip(" -")
+    return collapsed
+
+
+def _normalise_headline_collection(raw: Any) -> list[str]:
+    if raw is None:
+        return []
+    if isinstance(raw, str):
+        parts = [part.strip() for part in raw.splitlines()]
+        return [part for part in parts if part]
+    if isinstance(raw, (list, tuple, set)):
+        items: list[str] = []
+        for item in raw:
+            if isinstance(item, str):
+                text = item.strip()
+                if text:
+                    items.append(text)
+        return items
+    return []
+
+
+def _article_headlines_to_avoid(article: dict[str, Any] | None) -> list[str]:
+    if not isinstance(article, dict) or not article:
+        return []
+
+    collected: list[str] = []
+
+    def _collect(container: Any) -> None:
+        if isinstance(container, dict):
+            for key, value in container.items():
+                lowered = str(key).lower()
+                if any(token in lowered for token in ("headlines", "titles_to_avoid", "avoid_titles")):
+                    collected.extend(_normalise_headline_collection(value))
+                elif isinstance(value, (dict, list, tuple, set)):
+                    _collect(value)
+        elif isinstance(container, (list, tuple, set)):
+            for item in container:
+                if isinstance(item, (dict, list, tuple, set)):
+                    _collect(item)
+
+    _collect(article)
+
+    sanitized: list[str] = []
+    seen: set[str] = set()
+    for headline in collected:
+        cleaned = _sanitize_headline(headline)
+        if not cleaned:
+            continue
+        if cleaned in seen:
+            continue
+        seen.add(cleaned)
+        sanitized.append(cleaned)
+    return sanitized
+
+
+def _append_enumerated_section(instructions: list[str], header: str, items: Iterable[str]) -> None:
+    entries = [item for item in items if item]
+    if not entries:
+        return
+    instructions.append(header)
+    for idx, entry in enumerate(entries, 1):
+        instructions.append(f"{idx}. {entry}")
+
+
+def _normalize_topic_for_prompt(value: str) -> str:
+    collapsed = " ".join((value or "").split())
+    return collapsed.casefold()
+
+
+def _merge_topics_to_avoid(*sources: Iterable[str]) -> list[str]:
+    seen: set[str] = set()
+    merged: list[str] = []
+    for collection in sources:
+        if not collection:
+            continue
+        for item in collection:
+            normalized = _normalize_topic_for_prompt(item)
+            if not normalized:
+                continue
+            if normalized in seen:
+                continue
+            seen.add(normalized)
+            merged.append(item)
+    return merged
+
+
 def _build_user_prompt(
     channel: Channel,
     article: dict[str, Any] | None,
@@ -979,29 +1059,35 @@ def _build_user_prompt(
         "Treść posta oraz wszystkie media muszą opisywać to samo wydarzenie.",
     ]
 
-
     article_context = _article_context(article)
     if article_context:
         instructions.append("Korzystaj z poniższych danych artykułu:")
         instructions.append(article_context)
 
+    article_headlines = _article_headlines_to_avoid(article)
     headline_list = [h for h in (recent_headlines or []) if h]
-    if headline_list:
-        instructions.append(
-            "nie powielaj tematów:"
-        )
-        for idx, headline in enumerate(headline_list, 1):
-            instructions.append(f"{idx}. {headline}")
 
     avoid = avoid_texts or []
+    snippets: list[str] = []
     if avoid:
-        instructions.append(
-            "nie powielaj tematów:"
+        snippets = [
+            _shorten_for_prompt(text, width=220)
+            for text in avoid
+        ]
+    filtered = [snippet for snippet in snippets if snippet]
+
+    topics_to_avoid = _merge_topics_to_avoid(
+        article_headlines,
+        headline_list,
+        filtered,
+    )
+
+    if topics_to_avoid:
+        _append_enumerated_section(
+            instructions,
+            "nie powielaj tematów:",
+            topics_to_avoid,
         )
-        for idx, text in enumerate(avoid, 1):
-            snippet = _shorten_for_prompt(text, width=220)
-            if snippet:
-                instructions.append(f"{idx}. {snippet}")
 
     return "\n".join(instructions)
 
@@ -1778,7 +1864,6 @@ def gpt_generate_text(
             ],
             "tools": [
                 {"type": "web_search"},
-                {"type": "image_generation"},
             ],
         }
         if seed is not None:
