@@ -37,8 +37,8 @@ class ChannelPromptPropagationTest(TestCase):
         self.assertIn("angielskich nazw pól", system_prompt)
         self.assertIn("Treść posta oraz wszystkie media muszą opisywać to samo wydarzenie", system_prompt)
         self.assertIn("Jeśli media pochodzą z artykułu lub innego źródła", system_prompt)
-        self.assertIn("Nie podawaj bezpośrednich linków", system_prompt)
-        self.assertIn("poleceniach kanału", system_prompt)
+        self.assertNotIn("Nie podawaj bezpośrednich linków", system_prompt)
+        self.assertNotIn("poleceniach kanału", system_prompt)
         self.assertNotIn("linia1", system_prompt)
         self.assertNotIn("linia2", system_prompt)
 
@@ -87,7 +87,7 @@ class ChannelPromptPropagationTest(TestCase):
         self.assertEqual(mock_gpt.call_count, 2)
 
         second_system_prompt = mock_gpt.call_args_list[1][0][0]
-        self.assertIn("Unikaj powtarzania tematów", second_system_prompt)
+        self.assertNotIn("Unikaj powtarzania tematów", second_system_prompt)
         self.assertIn("Powtarzalny wpis o dronach", second_system_prompt)
 
     def test_channel_sources_are_listed_in_prompt(self):
@@ -113,12 +113,14 @@ class ChannelPromptPropagationTest(TestCase):
 
         mock_select.assert_called_with(self.channel, limit=1)
 
-        system_prompt, _ = mock_gpt.call_args[0][:2]
-        self.assertIn(primary.url, system_prompt)
+        system_prompt, user_prompt = mock_gpt.call_args[0][:2]
+        self.assertNotIn(primary.url, system_prompt)
         self.assertNotIn(secondary.url, system_prompt)
-        self.assertNotIn("Preferuj", system_prompt)
-        self.assertNotIn("źródło:", system_prompt)
-        self.assertNotIn("priorytet", system_prompt)
+        self.assertIn(primary.url, user_prompt)
+        self.assertNotIn(secondary.url, user_prompt)
+        self.assertNotIn("Preferuj", user_prompt)
+        self.assertNotIn("źródło:", user_prompt)
+        self.assertNotIn("priorytet", user_prompt)
 
     def test_recent_headlines_are_included_for_last_24_hours(self):
         Post.objects.create(
@@ -147,7 +149,7 @@ class ChannelPromptPropagationTest(TestCase):
             services.gpt_generate_post_payload(self.channel)
 
         system_prompt, _ = mock_gpt.call_args[0][:2]
-        self.assertIn("nagłówkami wpisów z ostatnich opublikowanych", system_prompt)
+        self.assertIn("nie powielaj tematów:", system_prompt)
         self.assertIn("Nagłówek A", system_prompt)
         self.assertIn("Drugi post bez entera", system_prompt)
         self.assertNotIn("Stary nagłówek", system_prompt)
@@ -173,3 +175,42 @@ class ChannelPromptPropagationTest(TestCase):
         self.assertEqual(40, len(enumerated_lines))
         self.assertIn("Nagłówek 40", system_prompt)
         self.assertNotIn("Nagłówek 0", system_prompt)
+
+    def test_article_headlines_are_sanitized_in_prompt(self):
+        article = {
+            "headlines": ["🔥 Pilne! Alarm!!!", "Drugi @nagłówek"],
+        }
+
+        with patch("apps.posts.services.gpt_generate_text") as mock_gpt:
+            mock_gpt.return_value = json.dumps({"post": {"text": "tekst"}, "media": []})
+            services.gpt_generate_post_payload(self.channel, article=article)
+
+        system_prompt, _ = mock_gpt.call_args[0][:2]
+        self.assertIn("nie powielaj tematów:", system_prompt)
+        self.assertIn("1. Pilne Alarm", system_prompt)
+        self.assertIn("2. Drugi nagłówek", system_prompt)
+        self.assertNotIn("🔥", system_prompt)
+        self.assertNotIn("@", system_prompt)
+
+    def test_topics_to_avoid_do_not_duplicate_recent_headlines(self):
+        Post.objects.create(
+            channel=self.channel,
+            text="Powielony nagłówek\nDalszy opis wpisu",
+            status=Post.Status.PUBLISHED,
+            scheduled_at=timezone.now() - timedelta(minutes=5),
+        )
+
+        article = {
+            "headlines": ["Powielony nagłówek", "Dodatkowy temat"],
+        }
+
+        with patch("apps.posts.services.gpt_generate_text") as mock_gpt:
+            mock_gpt.return_value = json.dumps({"post": {"text": "tekst"}, "media": []})
+            services.gpt_generate_post_payload(self.channel, article=article)
+
+        system_prompt, _ = mock_gpt.call_args[0][:2]
+        duplicate_lines = [
+            line for line in system_prompt.splitlines() if "Powielony nagłówek" in line
+        ]
+        self.assertEqual(1, len(duplicate_lines))
+        self.assertIn("Dodatkowy temat", system_prompt)
