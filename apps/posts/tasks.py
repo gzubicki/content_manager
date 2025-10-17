@@ -9,7 +9,7 @@ from django.core.cache import cache
 from django.db import transaction
 from django.utils import timezone
 from telegram import InputMediaPhoto, InputMediaVideo, InputMediaDocument
-from telegram.error import Forbidden
+from telegram.error import Forbidden, NetworkError
 
 from .models import Post, Channel
 from . import services
@@ -215,6 +215,34 @@ def _restore_status_after_failure(post: Post) -> None:
         post.save(update_fields=["status"])
 
 
+def _reset_to_draft_for_manual_fix(post: Post) -> None:
+    """Przenieś wpis do draftów, aby umożliwić ręczną korektę."""
+
+    update_fields: set[str] = set()
+
+    if post.status != Post.Status.DRAFT:
+        post.status = Post.Status.DRAFT
+        update_fields.add("status")
+
+    if post.scheduled_at is not None:
+        post.scheduled_at = None
+        update_fields.add("scheduled_at")
+
+    if post.message_id is not None:
+        post.message_id = None
+        update_fields.add("message_id")
+
+    if post.published_at is not None:
+        post.published_at = None
+        update_fields.add("published_at")
+
+    # Wyczyść deadline i pozwól modelowi ustawić nowy TTL dla draftu.
+    post.expires_at = None
+    update_fields.add("expires_at")
+
+    post.save(update_fields=sorted(update_fields))
+
+
 @shared_task
 def publish_post(post_id: int):
     post = Post.objects.select_related("channel").get(id=post_id)
@@ -248,6 +276,30 @@ def publish_post(post_id: int):
             post.id,
             post.channel_id,
             getattr(post.channel, "slug", None) or post.channel.tg_channel_id,
+            exc,
+            exc_info=exc,
+        )
+        return None
+    except NetworkError as exc:
+        coroutine.close()
+        message = str(exc or "")
+        if "entity too large" in message.lower():
+            _reset_to_draft_for_manual_fix(post)
+            services.mark_publication_failed(post, reason="request_entity_too_large")
+            logger.error(
+                "Nie można opublikować postu %s na kanale %s: %s (przeniesiono do draftów)",
+                post.id,
+                post.channel_id,
+                exc,
+                exc_info=exc,
+            )
+            return None
+        _restore_status_after_failure(post)
+        services.mark_publication_failed(post, reason="network_error")
+        logger.exception(
+            "Błąd sieci podczas publikacji postu %s na kanale %s: %s",
+            post.id,
+            post.channel_id,
             exc,
             exc_info=exc,
         )
