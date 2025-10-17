@@ -531,7 +531,7 @@ class BasePostAdmin(admin.ModelAdmin):
             .replace("\u2028", "\\u2028")
             .replace("\u2029", "\\u2029")
         )
-        channel_meta = list(Channel.objects.values("id", "name", "max_chars", "emoji_min", "emoji_max", "no_links_in_text"))
+        channel_meta = list(Channel.objects.values("id", "name", "max_chars", "no_links_in_text"))
         context["channel_metadata_json"] = self._serialize_media(channel_meta)
         return super().render_change_form(request, context, add=add, change=change, form_url=form_url, obj=obj)
 
