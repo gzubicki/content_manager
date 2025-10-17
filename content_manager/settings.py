@@ -1,8 +1,10 @@
 import os
 from pathlib import Path
+from typing import Optional
 from urllib.parse import urlsplit, urlunsplit
 
 import dj_database_url
+from django.core.exceptions import ImproperlyConfigured
 from django.utils.translation import gettext_lazy as _
 from dotenv import load_dotenv
 load_dotenv()
@@ -81,45 +83,94 @@ STORAGES = {
 
 MEDIA_URL = "/media/"
 MEDIA_ROOT = Path(os.getenv("MEDIA_ROOT", BASE_DIR / "media"))
-def _database_config_from_env() -> dict:
-    """Zwraca konfigurację bazy danych ze zmiennej środowiskowej.
+_SCHEME_ALIASES = {
+    "postgres": "postgresql",
+    "postgresql": "postgresql",
+    "postgresql_psycopg2": "postgresql",
+    "postgresql2": "postgresql",
+    "sqlite3": "sqlite",
+}
 
-    Obsługujemy również schematy zawierające nazwę sterownika (np.
-    ``postgresql+asyncpg``), które nie są rozpoznawane przez ``dj_database_url``.
-    W takich przypadkach sprowadzamy schemat do formy wspieranej przez Django,
-    jednocześnie zachowując domyślny silnik bazodanowy.
-    """
+
+def _env_bool(name: str, default: bool = False) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+
+    normalized = value.strip().lower()
+    if normalized in {"1", "true", "t", "yes", "y", "on"}:
+        return True
+    if normalized in {"0", "false", "f", "no", "n", "off"}:
+        return False
+
+    raise ImproperlyConfigured(f"Wartość zmiennej {name} musi być typu logicznego (0/1, true/false).")
+
+
+def _env_int(name: str, default: Optional[int] = None) -> Optional[int]:
+    value = os.getenv(name)
+    if value is None:
+        return default
+
+    try:
+        return int(value)
+    except ValueError as exc:
+        raise ImproperlyConfigured(f"Wartość zmiennej {name} musi być liczbą całkowitą.") from exc
+
+
+def _normalize_database_url(database_url: str) -> str:
+    split = urlsplit(database_url)
+    if not split.scheme:
+        return database_url
+
+    scheme = split.scheme.lower()
+    driver = None
+
+    if "+" in scheme:
+        base_scheme, driver = scheme.split("+", 1)
+    else:
+        base_scheme = scheme
+
+    normalized_scheme = _SCHEME_ALIASES.get(base_scheme, base_scheme)
+
+    # Jeśli schemat zawierał sterownik, sprowadzamy go do formy bazowej.
+    if driver or normalized_scheme != scheme:
+        return urlunsplit(
+            (normalized_scheme, split.netloc, split.path, split.query, split.fragment)
+        )
+
+    return database_url
+
+
+def _database_config_from_env() -> dict:
+    """Zwraca konfigurację bazy danych opartą o zmienne środowiskowe."""
 
     database_url = os.getenv("DATABASE_URL", "sqlite:///db.sqlite3")
-    split = urlsplit(database_url)
+    normalized_url = _normalize_database_url(database_url)
+    conn_max_age = _env_int("DB_CONN_MAX_AGE", 0) or 0
+    ssl_require = _env_bool("DB_SSL_REQUIRE", False)
 
-    if not split.scheme:
-        return dj_database_url.parse(database_url)
+    try:
+        config = dj_database_url.parse(
+            normalized_url,
+            conn_max_age=conn_max_age,
+            ssl_require=ssl_require,
+        )
+    except dj_database_url.UnknownSchemeError as exc:
+        raise ImproperlyConfigured(
+            "Nieobsługiwany schemat w DATABASE_URL. Użyj standardowego schematu (np. postgresql) lub "
+            "usuń nazwę sterownika ze złącza, np. postgres zamiast postgresql+asyncpg."
+        ) from exc
 
-    # Rozpoznaj schematy w stylu ``postgresql+asyncpg``.
-    if "+" in split.scheme:
-        base_scheme, driver = split.scheme.split("+", 1)
-    else:
-        base_scheme, driver = split.scheme, None
+    host_override = os.getenv("DB_HOST")
+    if host_override:
+        config["HOST"] = host_override
 
-    normalized_scheme = base_scheme
-    engine_override = None
+    port_override = os.getenv("DB_PORT")
+    if port_override is not None:
+        config["PORT"] = _env_int("DB_PORT")
 
-    if base_scheme in {"postgresql", "postgresql2", "postgresql_psycopg2"}:
-        normalized_scheme = "postgres"
-        engine_override = "django.db.backends.postgresql"
-    elif base_scheme == "postgres":
-        engine_override = "django.db.backends.postgresql"
-
-    rebuilt_url = urlunsplit((normalized_scheme, split.netloc, split.path, split.query, split.fragment))
-    config = dj_database_url.parse(rebuilt_url)
-
-    # Sterownik ``asyncpg`` nadal korzysta z silnika Django dla PostgreSQL.
-    if driver == "asyncpg" and engine_override is None:
-        engine_override = "django.db.backends.postgresql"
-
-    if engine_override:
-        config["ENGINE"] = engine_override
+    atomic_requests = _env_bool("DB_ATOMIC_REQUESTS", False)
+    config["ATOMIC_REQUESTS"] = atomic_requests
 
     return config
 
