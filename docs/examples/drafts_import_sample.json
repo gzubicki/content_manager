@@ -1,0 +1,37 @@
+{
+  "drafts": [
+    {
+      "channel_id": 2,
+      "post": {
+        "text": "Rosyjska artyleria ostrzelała pozycje obrońców w rejonie Awdijiwki. Ukraińskie źródła podają ośmiu rannych żołnierzy, linia pozostaje utrzymana.",
+        "source": [
+          {
+            "url": "https://example.com/wiadomosc-1",
+            "label": "Raport sztabu"
+          }
+        ]
+      },
+      "media": [
+        {
+          "type": "photo",
+          "source_url": "https://example.com/media/awdiijwka.jpg",
+          "resolver": "telegram",
+          "reference": {
+            "tg_post_url": "https://t.me/sztuka_wojny/1234",
+            "posted_at": "2024-06-10T08:30:00Z"
+          },
+          "caption": "Awdijiwka"
+        }
+      ]
+    },
+    {
+      "channel_slug": "sztuka-wojny",
+      "post": {
+        "text": "Ukraińska 3. Brygada Szturmowa odparła dwa natarcia w sektorze Kupiańska. Straty przeciwnika: 3 czołgi, 2 BWP.",
+        "source": [
+          "https://example.com/komunikat-2"
+        ]
+      }
+    }
+  ]
+}
