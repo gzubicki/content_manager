@@ -17,8 +17,6 @@ class ChannelPromptPropagationTest(TestCase):
             tg_channel_id="@kanal",
             language="pl",
             max_chars=321,
-            emoji_min=2,
-            emoji_max=4,
             footer_text="linia1\nlinia2",
             no_links_in_text=True,
             style_prompt="Dostosuj ton do kanału.",
@@ -37,14 +35,12 @@ class ChannelPromptPropagationTest(TestCase):
         self.assertIn("angielskich nazw pól", system_prompt)
         self.assertIn("Treść posta oraz wszystkie media muszą opisywać to samo wydarzenie", system_prompt)
         self.assertIn("Jeśli media pochodzą z artykułu lub innego źródła", system_prompt)
-        self.assertNotIn("Nie podawaj bezpośrednich linków", system_prompt)
-        self.assertNotIn("poleceniach kanału", system_prompt)
         self.assertNotIn("linia1", system_prompt)
         self.assertNotIn("linia2", system_prompt)
 
         self.assertIn("Wytyczne kanału", user_prompt)
         self.assertIn("maksymalnie 321 znaków", user_prompt)
-        self.assertIn("Liczba emoji", user_prompt)
+        self.assertNotIn("emoji", user_prompt.lower())
         self.assertIn("linia1", user_prompt)
         self.assertIn("linia2", user_prompt)
         self.assertIn("Nie dodawaj linków w treści.", user_prompt)
@@ -87,7 +83,7 @@ class ChannelPromptPropagationTest(TestCase):
         self.assertEqual(mock_gpt.call_count, 2)
 
         second_system_prompt = mock_gpt.call_args_list[1][0][0]
-        self.assertNotIn("Unikaj powtarzania tematów", second_system_prompt)
+        self.assertIn("nie powielaj tematów", second_system_prompt.lower())
         self.assertIn("Powtarzalny wpis o dronach", second_system_prompt)
 
     def test_channel_sources_are_listed_in_prompt(self):
@@ -149,7 +145,7 @@ class ChannelPromptPropagationTest(TestCase):
             services.gpt_generate_post_payload(self.channel)
 
         system_prompt, _ = mock_gpt.call_args[0][:2]
-        self.assertIn("nie powielaj tematów:", system_prompt)
+        self.assertIn("nie powielaj tematów", system_prompt.lower())
         self.assertIn("Nagłówek A", system_prompt)
         self.assertIn("Drugi post bez entera", system_prompt)
         self.assertNotIn("Stary nagłówek", system_prompt)

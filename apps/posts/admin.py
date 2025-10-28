@@ -381,6 +381,100 @@ class GptDraftRequestForm(forms.Form):
         return cleaned
 
 
+class DraftImportForm(forms.Form):
+    drafts_file = forms.FileField(
+        label="Plik JSON",
+        help_text="Oczekiwany jest plik JSON z listą draftów lub obiekt z polem drafts.",
+    )
+    default_channel = forms.ModelChoiceField(
+        label="Kanał domyślny",
+        required=False,
+        queryset=Channel.objects.none(),
+        help_text="Zostanie użyty, gdy rekord nie określa kanału.",
+    )
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.fields["default_channel"].queryset = Channel.objects.all().order_by("name")
+        self.fields["default_channel"].empty_label = "— wybierz kanał —"
+
+    def clean_drafts_file(self):
+        uploaded = self.files.get(self.add_prefix("drafts_file"))
+        if not uploaded:
+            raise forms.ValidationError("Wybierz plik JSON do importu.")
+        try:
+            raw = uploaded.read()
+        except Exception as exc:  # pragma: no cover - defensywne
+            raise forms.ValidationError("Nie udało się odczytać pliku JSON.") from exc
+        try:
+            text = raw.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise forms.ValidationError("Plik JSON musi być zakodowany w UTF-8.") from exc
+        try:
+            parsed = json.loads(text)
+        except json.JSONDecodeError as exc:
+            raise forms.ValidationError(f"Niepoprawny JSON: {exc}") from exc
+
+        entries = self._coerce_entries(parsed)
+        if not entries:
+            raise forms.ValidationError("Plik JSON nie zawiera żadnych draftów do importu.")
+        return entries
+
+    def clean(self):
+        cleaned = super().clean()
+        entries = cleaned.get("drafts_file") or []
+        default_channel = cleaned.get("default_channel")
+        missing: list[int] = []
+        for index, entry in enumerate(entries, start=1):
+            if not self._has_channel_hint(entry) and default_channel is None:
+                missing.append(index)
+        if missing:
+            preview = ", ".join(str(num) for num in missing[:5])
+            if len(missing) > 5:
+                preview += ", …"
+            raise forms.ValidationError(
+                (
+                    "Drafty #{numbers} nie wskazują kanału – podaj channel_id/channel_slug "
+                    "w pliku lub wybierz kanał domyślny."
+                ).format(numbers=preview)
+            )
+        return cleaned
+
+    @staticmethod
+    def _coerce_entries(parsed: Any) -> list[dict[str, Any]]:
+        if isinstance(parsed, dict):
+            if isinstance(parsed.get("drafts"), list):
+                items = parsed.get("drafts") or []
+            else:
+                items = [parsed]
+        elif isinstance(parsed, list):
+            items = parsed
+        else:
+            raise forms.ValidationError("Oczekiwano listy lub obiektu JSON z polem drafts.")
+
+        entries: list[dict[str, Any]] = []
+        for index, item in enumerate(items, start=1):
+            if not isinstance(item, dict):
+                raise forms.ValidationError(
+                    f"Element #{index} w pliku JSON nie jest obiektem – oczekiwano mapy klucz/wartość."
+                )
+            entries.append(item)
+        return entries
+
+    @staticmethod
+    def _has_channel_hint(entry: dict[str, Any]) -> bool:
+        if not isinstance(entry, dict):
+            return False
+        if any(key in entry for key in ("channel_id", "channel_slug")):
+            return True
+        channel_field = entry.get("channel")
+        if isinstance(channel_field, dict):
+            return any(key in channel_field for key in ("id", "slug"))
+        if isinstance(channel_field, (int, str)) and str(channel_field).strip():
+            return True
+        return False
+
+
 class BasePostAdmin(admin.ModelAdmin):
     form = PostForm
     list_per_page = ADMIN_PAGE_SIZE
@@ -531,7 +625,7 @@ class BasePostAdmin(admin.ModelAdmin):
             .replace("\u2028", "\\u2028")
             .replace("\u2029", "\\u2029")
         )
-        channel_meta = list(Channel.objects.values("id", "name", "max_chars", "emoji_min", "emoji_max", "no_links_in_text"))
+        channel_meta = list(Channel.objects.values("id", "name", "max_chars", "no_links_in_text"))
         context["channel_metadata_json"] = self._serialize_media(channel_meta)
         return super().render_change_form(request, context, add=add, change=change, form_url=form_url, obj=obj)
 
@@ -928,6 +1022,8 @@ class DraftPostAdmin(BasePostAdmin):
     approve_path = "<int:object_id>/akceptuj/"
     gpt_article_action = "gpt_article"
     gpt_article_path = "dodaj-z-gpt/"
+    draft_import_action = "import_json"
+    draft_import_path = "import-json/"
 
     def filter_queryset(self, qs):
         return qs.filter(status=Post.Status.DRAFT)
@@ -936,6 +1032,11 @@ class DraftPostAdmin(BasePostAdmin):
         urls = super().get_urls()
         opts = self.model._meta
         custom = [
+            path(
+                self.draft_import_path,
+                self.admin_site.admin_view(self.import_view),
+                name=f"{opts.app_label}_{opts.model_name}_{self.draft_import_action}",
+            ),
             path(
                 self.gpt_article_path,
                 self.admin_site.admin_view(self.gpt_article_view),
@@ -958,10 +1059,83 @@ class DraftPostAdmin(BasePostAdmin):
                 )
             except NoReverseMatch:
                 response.context_data["gpt_article_url"] = None
+            try:
+                response.context_data["draft_import_url"] = reverse(
+                    f"admin:{self.model._meta.app_label}_{self.model._meta.model_name}_{self.draft_import_action}"
+                )
+            except NoReverseMatch:
+                response.context_data["draft_import_url"] = None
         return response
 
     def get_approve_url(self, post):
         return self._object_url(post, self.approve_action)
+
+    def _resolve_import_channel(
+        self,
+        entry: dict[str, Any],
+        default_channel: Channel | None,
+        cache: dict[tuple[str, str | int], Channel],
+    ) -> Channel:
+        channel_field = entry.get("channel")
+        channel_id = entry.get("channel_id")
+        channel_slug = entry.get("channel_slug")
+
+        if isinstance(channel_field, dict):
+            channel_id = channel_field.get("id", channel_id)
+            channel_slug = channel_field.get("slug", channel_slug)
+        elif isinstance(channel_field, (int, str)) and str(channel_field).strip():
+            if isinstance(channel_field, int) or str(channel_field).strip().isdigit():
+                channel_id = channel_field
+            else:
+                channel_slug = channel_field
+
+        if channel_id is not None:
+            try:
+                channel_id_int = int(channel_id)
+            except (TypeError, ValueError):
+                raise ValueError("channel_id musi być liczbą całkowitą.")
+            cache_key = ("id", channel_id_int)
+            if cache_key not in cache:
+                try:
+                    cache[cache_key] = Channel.objects.get(id=channel_id_int)
+                except Channel.DoesNotExist:
+                    raise ValueError(f"Kanał o ID {channel_id_int} nie istnieje.")
+            return cache[cache_key]
+
+        if channel_slug:
+            slug = str(channel_slug).strip()
+            if not slug:
+                raise ValueError("channel_slug nie może być pusty.")
+            cache_key = ("slug", slug)
+            if cache_key not in cache:
+                try:
+                    cache[cache_key] = Channel.objects.get(slug=slug)
+                except Channel.DoesNotExist:
+                    raise ValueError(f"Kanał o slugu '{slug}' nie istnieje.")
+            return cache[cache_key]
+
+        if default_channel is not None:
+            return default_channel
+
+        raise ValueError("Brak kanału – uzupełnij channel_id/channel_slug lub wybierz kanał domyślny.")
+
+    def _extract_import_payload(self, entry: dict[str, Any]) -> dict[str, Any]:
+        payload = entry.get("payload")
+        if payload is not None:
+            if not isinstance(payload, dict):
+                raise ValueError("Sekcja payload musi być obiektem JSON.")
+            return dict(payload)
+
+        payload = {
+            key: value
+            for key, value in entry.items()
+            if key not in {"channel", "channel_id", "channel_slug"}
+        }
+        if not payload:
+            raise ValueError("Brak danych draftu w rekordzie JSON.")
+        if not isinstance(payload, dict):
+            raise ValueError("Dane draftu muszą być obiektem JSON.")
+        return dict(payload)
 
     def _absolute_public_url(self, request, url: str) -> str:
         url = (url or "").strip()
@@ -1056,6 +1230,82 @@ class DraftPostAdmin(BasePostAdmin):
             "changelist_url": self._changelist_url(),
         }
         return TemplateResponse(request, "admin/posts/gpt_draft_request.html", context)
+
+    def import_view(self, request):
+        if not self.has_add_permission(request):
+            raise PermissionDenied
+
+        form = DraftImportForm(request.POST or None, request.FILES or None)
+
+        if request.method == "POST" and form.is_valid():
+            entries: list[dict[str, Any]] = form.cleaned_data.get("drafts_file") or []
+            default_channel: Channel | None = form.cleaned_data.get("default_channel")
+            cache: dict[tuple[str, str | int], Channel] = {}
+            created = 0
+            errors: list[str] = []
+
+            for index, entry in enumerate(entries, start=1):
+                if not isinstance(entry, dict):
+                    errors.append(f"#{index}: pominięto – oczekiwano obiektu JSON.")
+                    continue
+                try:
+                    channel = self._resolve_import_channel(entry, default_channel, cache)
+                except ValueError as exc:
+                    errors.append(f"#{index}: {exc}")
+                    continue
+
+                try:
+                    payload = self._extract_import_payload(entry)
+                except ValueError as exc:
+                    errors.append(f"#{index}: {exc}")
+                    continue
+
+                try:
+                    services.create_post_from_payload(channel, payload)
+                except Exception as exc:  # pragma: no cover - defensywne logowanie
+                    logger.exception(
+                        "Import draftu #%s dla kanału %s nie powiódł się", index, channel.id
+                    )
+                    errors.append(f"#{index}: błąd tworzenia draftu ({exc})")
+                    continue
+
+                created += 1
+
+            if created:
+                suffix = "draft" if created == 1 else ("drafty" if created <= 4 else "draftów")
+                self.message_user(
+                    request,
+                    f"Zaimportowano {created} {suffix}.",
+                    level=messages.SUCCESS,
+                )
+
+            if errors:
+                error_preview = format_html_join("<br>", "{}", ((err,) for err in errors[:5]))
+                if len(errors) > 5:
+                    error_preview = format_html(
+                        "{}<br>… (łącznie {} błędów)",
+                        error_preview,
+                        len(errors),
+                    )
+                self.message_user(
+                    request,
+                    format_html("Pominięto część wpisów:<br>{}", error_preview),
+                    level=messages.WARNING,
+                )
+
+            if not errors:
+                return redirect(self._changelist_url())
+
+        context = {
+            **self.admin_site.each_context(request),
+            "opts": self.model._meta,
+            "title": "Import draftów z JSON",
+            "form": form,
+            "media": form.media,
+            "changelist_url": self._changelist_url(),
+            "example_path": "docs/examples/drafts_import_sample.json",
+        }
+        return TemplateResponse(request, "admin/posts/draft_import.html", context)
 
     def approve_view(self, request, object_id):
         post = get_object_or_404(self.model, pk=object_id)

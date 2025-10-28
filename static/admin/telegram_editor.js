@@ -1,8 +1,6 @@
 (function(){
   "use strict";
 
-  const EMOJI_REGEX = /\p{Emoji}/gu;
-
   function parseChannelMetadata(){
     const node = document.getElementById("channel-metadata");
     if (!node){
@@ -69,14 +67,6 @@
     textarea.dispatchEvent(new Event("input", { bubbles: true }));
   }
 
-  function computeEmojiCount(value){
-    if (!value){
-      return 0;
-    }
-    const matches = value.match(EMOJI_REGEX);
-    return matches ? matches.length : 0;
-  }
-
   function initTextEditor(channelMetadata){
     const editors = document.querySelectorAll("textarea[data-telegram-editor]");
     if (!editors.length){
@@ -130,11 +120,8 @@
       function updateCounter(){
         const meta = currentChannelMeta();
         const limit = meta && meta.max_chars ? Number(meta.max_chars) : null;
-        const emojiMin = meta && meta.emoji_min ? Number(meta.emoji_min) : null;
-        const emojiMax = meta && meta.emoji_max ? Number(meta.emoji_max) : null;
         const value = textarea.value || "";
         const length = value.length;
-        const emojiCount = computeEmojiCount(value);
 
         const parts = [];
         parts.push(`Znaki: ${limit ? `${length}/${limit}` : length}`);
@@ -143,12 +130,6 @@
           counter.dataset.overLimit = "1";
         } else {
           delete counter.dataset.overLimit;
-        }
-
-        if (emojiMin || emojiMax){
-          const range = `${emojiMin ?? 0}-${emojiMax ?? "∞"}`;
-          const hint = emojiMin && emojiCount < emojiMin ? " (za mało)" : (emojiMax && emojiCount > emojiMax ? " (za dużo)" : "");
-          parts.push(`Emoji: ${emojiCount}${range ? ` (zalecane ${range})` : ""}${hint}`);
         }
 
         counter.textContent = parts.join(" • ");

@@ -1,0 +1,45 @@
+{% extends "admin/base_site.html" %}
+{% load i18n %}
+
+{% block extrahead %}
+  {{ block.super }}
+  {{ media }}
+{% endblock %}
+
+{% block content %}
+  <div id="content" class="content">
+    <h1>{{ title }}</h1>
+    <div id="content-main">
+      {% if form.errors %}
+        <p class="errornote">
+          {% blocktranslate count counter=form.errors|length %}Popraw zaznaczony błąd.{% plural %}Popraw zaznaczone błędy.{% endblocktranslate %}
+        </p>
+        {{ form.non_field_errors }}
+      {% endif %}
+      <form method="post" enctype="multipart/form-data" novalidate>
+        {% csrf_token %}
+        <fieldset class="module aligned">
+          <div class="form-row field-drafts_file{% if form.drafts_file.errors %} errors{% endif %}">
+            {{ form.drafts_file.errors }}
+            <label for="{{ form.drafts_file.id_for_label }}">{{ form.drafts_file.label }}{% if form.drafts_file.field.required %}*{% endif %}:</label>
+            {{ form.drafts_file }}
+            <p class="help">
+              {{ form.drafts_file.help_text }}
+              {% if example_path %}<br>Przykład struktury znajdziesz w pliku <code>{{ example_path }}</code>.{% endif %}
+            </p>
+          </div>
+          <div class="form-row field-default_channel{% if form.default_channel.errors %} errors{% endif %}">
+            {{ form.default_channel.errors }}
+            <label for="{{ form.default_channel.id_for_label }}">{{ form.default_channel.label }}{% if form.default_channel.field.required %}*{% endif %}:</label>
+            {{ form.default_channel }}
+            {% if form.default_channel.help_text %}<p class="help">{{ form.default_channel.help_text }}</p>{% endif %}
+          </div>
+        </fieldset>
+        <div class="submit-row">
+          <a class="button cancel-link" href="{{ changelist_url }}">Anuluj</a>
+          <button type="submit" class="default">Importuj drafty</button>
+        </div>
+      </form>
+    </div>
+  </div>
+{% endblock %}

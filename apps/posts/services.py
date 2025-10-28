@@ -677,13 +677,6 @@ def _channel_constraints_prompt(channel: Channel) -> str:
     if getattr(channel, "max_chars", None):
         rules.append(f"Limit długości tekstu: maksymalnie {channel.max_chars} znaków.")
 
-    emoji_min = getattr(channel, "emoji_min", None)
-    emoji_max = getattr(channel, "emoji_max", None)
-    if emoji_min or emoji_max:
-        low = emoji_min or 0
-        high = emoji_max or 0
-        rules.append(f"Liczba emoji w treści:od {low}, do {high}.")
-
     footer = (channel.footer_text or "").strip()
     if footer:
         rules.append("Stopka kanału:")
@@ -1090,6 +1083,31 @@ def _build_user_prompt(
         )
 
     return "\n".join(instructions)
+
+
+def build_draft_generation_prompt(
+    channel: Channel,
+    *,
+    article: dict[str, Any] | None = None,
+    avoid_texts: Iterable[str] | None = None,
+    include_recent_headlines: bool = True,
+) -> dict[str, str]:
+    """Zbuduj parę promptów (system i user) do generowania draftu dla kanału."""
+
+    headlines: Iterable[str] | None = None
+    if include_recent_headlines:
+        headlines = _recent_post_headlines(channel)
+
+    instructions = _build_user_prompt(
+        channel,
+        article,
+        list(avoid_texts or []),
+        recent_headlines=headlines,
+    )
+    return {
+        "system": instructions,
+        "user": _channel_system_prompt(channel),
+    }
 
 
 def _strip_code_fence(raw: str) -> str:
@@ -1970,7 +1988,7 @@ def gpt_rewrite_text(channel: Channel, text: str, editor_prompt: str) -> str:
     channel_prompt = _channel_system_prompt(channel)
     system_prompt = (
         "Przepisz poniższy tekst zgodnie z zasadami i wytycznymi edytora. "
-        "Zachowaj charakter kanału, wymagania dotyczące długości, emoji oraz stopki opisane w poleceniach kanału."
+        "Zachowaj charakter kanału, wymagania dotyczące długości oraz stopki opisane w poleceniach kanału."
 
     )
     rewritten = gpt_generate_text(
