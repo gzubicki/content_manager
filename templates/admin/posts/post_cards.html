@@ -14,6 +14,11 @@
     {% elif opts.app_label == 'posts' and opts.model_name == 'draftpost' %}
       <li><a href="{% url 'admin:posts_draftpost_gpt_article' %}" class="addlink">Dodaj z GPT</a></li>
     {% endif %}
+    {% if draft_import_url %}
+      <li><a href="{{ draft_import_url }}" class="historylink">Importuj z JSON</a></li>
+    {% elif opts.app_label == 'posts' and opts.model_name == 'draftpost' %}
+      <li><a href="{% url 'admin:posts_draftpost_import_json' %}" class="historylink">Importuj z JSON</a></li>
+    {% endif %}
   {% endif %}
 {% endblock %}
 

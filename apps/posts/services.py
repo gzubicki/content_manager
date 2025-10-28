@@ -999,6 +999,31 @@ def _build_user_prompt(
     return "\n".join(instructions)
 
 
+def build_draft_generation_prompt(
+    channel: Channel,
+    *,
+    article: dict[str, Any] | None = None,
+    avoid_texts: Iterable[str] | None = None,
+    include_recent_headlines: bool = True,
+) -> dict[str, str]:
+    """Zbuduj parę promptów (system i user) do generowania draftu dla kanału."""
+
+    headlines: Iterable[str] | None = None
+    if include_recent_headlines:
+        headlines = _recent_post_headlines(channel)
+
+    instructions = _build_user_prompt(
+        channel,
+        article,
+        list(avoid_texts or []),
+        recent_headlines=headlines,
+    )
+    return {
+        "system": instructions,
+        "user": _channel_system_prompt(channel),
+    }
+
+
 def _strip_code_fence(raw: str) -> str:
     cleaned = raw.strip()
     if cleaned.startswith("```"):
