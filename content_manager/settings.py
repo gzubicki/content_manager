@@ -24,12 +24,33 @@ LANGUAGES = [
 ]
 LOCALE_PATHS = [BASE_DIR / "locale"]
 
+
+def _env_bool(name: str, default: bool = False) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+
+    normalized = value.strip().lower()
+    if normalized in {"1", "true", "t", "yes", "y", "on"}:
+        return True
+    if normalized in {"0", "false", "f", "no", "n", "off"}:
+        return False
+
+    raise ImproperlyConfigured(f"Wartość zmiennej {name} musi być typu logicznego (0/1, true/false).")
+
+
+def _is_production_environment() -> bool:
+    environment = os.getenv("ENV", "dev").strip().lower()
+    return environment in {"prod", "production"}
+
+
 SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
 SESSION_ENGINE = os.getenv("SESSION_ENGINE", "django.contrib.sessions.backends.db")
 
-# produkcja:
-SESSION_COOKIE_SECURE = True
-CSRF_COOKIE_SECURE = True
+# Domyślnie: False dla local/dev, True dla prod.
+_default_secure_cookie = _is_production_environment()
+SESSION_COOKIE_SECURE = _env_bool("SESSION_COOKIE_SECURE", _default_secure_cookie)
+CSRF_COOKIE_SECURE = _env_bool("CSRF_COOKIE_SECURE", _default_secure_cookie)
 
 
 INSTALLED_APPS = [
@@ -90,20 +111,6 @@ _SCHEME_ALIASES = {
     "postgresql2": "postgresql",
     "sqlite3": "sqlite",
 }
-
-
-def _env_bool(name: str, default: bool = False) -> bool:
-    value = os.getenv(name)
-    if value is None:
-        return default
-
-    normalized = value.strip().lower()
-    if normalized in {"1", "true", "t", "yes", "y", "on"}:
-        return True
-    if normalized in {"0", "false", "f", "no", "n", "off"}:
-        return False
-
-    raise ImproperlyConfigured(f"Wartość zmiennej {name} musi być typu logicznego (0/1, true/false).")
 
 
 def _env_int(name: str, default: Optional[int] = None) -> Optional[int]:
