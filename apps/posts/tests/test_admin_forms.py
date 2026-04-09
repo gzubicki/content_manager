@@ -51,6 +51,21 @@ class PostFormTests(TestCase):
         )
         self.assertTrue(form.is_valid())
 
+    def test_uses_submitted_text_not_instance_text_for_validation(self) -> None:
+        self.post.text = "ok"
+        form = PostForm(
+            data={
+                "channel": self.channel.pk,
+                "text": "x" * 50,
+                "source_url": "",
+                "status": Post.Status.DRAFT,
+                "schedule_mode": "AUTO",
+            },
+            instance=self.post,
+        )
+        self.assertFalse(form.is_valid())
+        self.assertIn("Za długie", " ".join(form.non_field_errors()))
+
     def test_source_url_can_be_set_and_is_stripped(self) -> None:
         form = PostForm(
             data={
