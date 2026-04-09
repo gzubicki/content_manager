@@ -1,7 +1,11 @@
 from django import forms
 
+
+def validate_text_for_channel(text, channel):
+    text = text or ""
+    if channel and len(text) > channel.max_chars:
+        raise forms.ValidationError(f"Za długie (> {channel.max_chars} znaków)")
+
+
 def validate_post_text_for_channel(post):
-    t = post.text
-    ch = post.channel
-    if len(t) > ch.max_chars:
-        raise forms.ValidationError(f"Za długie (> {ch.max_chars} znaków)")
+    validate_text_for_channel(post.text, post.channel)

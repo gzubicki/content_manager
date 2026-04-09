@@ -39,7 +39,7 @@ from .tasks import (
 
 logger = logging.getLogger(__name__)
 from .drafts import iter_missing_draft_requirements
-from .validators import validate_post_text_for_channel
+from .validators import validate_post_text_for_channel, validate_text_for_channel
 
 
 def enqueue_missing_drafts(channels: Iterable[Channel]) -> tuple[int, int]:
@@ -131,9 +131,10 @@ class PostForm(forms.ModelForm):
 
     def clean(self):
         cleaned = super().clean()
-        obj = self.instance
-        if obj and obj.channel_id:
-            validate_post_text_for_channel(obj)
+        text = cleaned.get("text")
+        channel = cleaned.get("channel")
+        if channel:
+            validate_text_for_channel(text, channel)
         return cleaned
 
     def clean_source_url(self) -> str:

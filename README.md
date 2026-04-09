@@ -1,16 +1,25 @@
 Drafty generowane wyłącznie przez GPT. Brak fallbacku na tekst statyczny.
 
-## Start
+## Minimalny bootstrap
+Rzeczywista minimalna kolejność uruchomienia (zgodna z aktualnym kodem):
+
 ```bash
 docker compose up -d --build
 docker compose exec web python manage.py migrate
 # opcjonalnie (jeśli komenda istnieje w Twoim projekcie):
 # docker compose exec web python manage.py init_channels
 docker compose restart worker beat
+docker compose exec web python manage.py createsuperuser
 ```
 
-- Admin: `http://localhost:8000/admin/`
-- Celery worker/beat startują automatycznie.
+Następnie:
+1. Zaloguj się do panelu admina: `http://localhost:8000/admin/`.
+2. Dodaj co najmniej jeden rekord **Kanał** ręcznie w panelu admina (`posts > Kanały`).
+3. (Opcjonalnie) Dodaj źródła przez `posts > Źródła kanału`.
+
+> Nie ma komendy `python manage.py init_channels` w tym repozytorium — inicjalizacja kanałów jest wykonywana ręcznie przez panel administracyjny.
+
+- Celery worker/beat startują automatycznie przez `docker compose`.
 - PWA: dodaj do ekranu w Chrome na Androidzie.
 
 ## Tworzenie superadmina
@@ -124,6 +133,20 @@ Główny workflow opiera się o `Post.Status`:
   - model musi działać z Responses API i obsługiwać wymuszone narzędzie `web_search`; błędny model zwykle kończy się błędem żądania do API.
 - `TG_BOT_TOKEN` (globalnie) + poprawny token bota przypisany do kanału (`Channel.bot_token`) i uprawnienia publikacji
   - bez tokena/uprawnień `publish_post` nie opublikuje wpisu (status zostanie cofnięty, błąd zapisany w metadanych).
+## Komendy `manage.py` użyte w tym README vs kod
+
+Zweryfikowano względem `apps/*/management/commands/`:
+
+- ✅ `python manage.py migrate` — komenda wbudowana Django.
+- ✅ `python manage.py createsuperuser` — komenda wbudowana Django.
+- ❌ `python manage.py init_channels` — **usunięta z README**, brak implementacji w `apps/*/management/commands/`.
+
+Aktualnie jedyna niestandardowa komenda z kodu aplikacji:
+
+```bash
+docker compose exec web python manage.py generate_draft_prompt <channel_id_lub_slug> [--no-headlines] [--article '{"title":"..."}'] [--avoid "tekst"]
+```
+
 
 ### Opcjonalne
 
@@ -143,3 +166,29 @@ Główny workflow opiera się o `Post.Status`:
   - zbyt mało: agresywne cofanie wpisów do draftów.
 - `DRAFT_TARGET_COUNT`, `DRAFT_TTL_DAYS`
   - niskie wartości: ryzyko braku gotowych draftów; wysokie: większy koszt generacji i większa rotacja treści.
+## ENV (opcjonalne)
+- `OPENAI_TIMEOUT` – niestandardowy limit czasu żądań do OpenAI (domyślnie 60 s).
+- `OPENAI_MAX_RETRIES` – liczba ponowień na poziomie klienta OpenAI.
+- `OPENAI_BASE_URL` – alternatywny endpoint (np. Azure/OpenAI-proxy).
+- `OPENAI_ORG` – identyfikator organizacji OpenAI.
+- `OPENAI_PROJECT` – identyfikator projektu OpenAI.
+- `SESSION_COOKIE_SECURE` – flaga `Secure` dla ciasteczka sesji (`0/1`, `true/false`).
+- `CSRF_COOKIE_SECURE` – flaga `Secure` dla ciasteczka CSRF (`0/1`, `true/false`).
+
+### Rekomendowane wartości (dev/prod)
+- **local/dev**: `ENV=dev`, `SESSION_COOKIE_SECURE=0`, `CSRF_COOKIE_SECURE=0`
+- **produkcja**: `ENV=production`, `SESSION_COOKIE_SECURE=1`, `CSRF_COOKIE_SECURE=1`
+
+Jeśli `SESSION_COOKIE_SECURE` i `CSRF_COOKIE_SECURE` nie są ustawione, aplikacja dobiera domyślne wartości na podstawie `ENV`:
+- `ENV=dev` (lub brak `ENV`) → obie flagi `False`
+- `ENV=prod` / `ENV=production` → obie flagi `True`
+
+## Checklist uruchomienia (cookie security)
+1. Skopiuj `.env.example` do `.env` i ustaw `ENV` odpowiednio do środowiska.
+2. Dla dev zostaw `SESSION_COOKIE_SECURE=0` i `CSRF_COOKIE_SECURE=0`.
+3. Dla produkcji ustaw `SESSION_COOKIE_SECURE=1` i `CSRF_COOKIE_SECURE=1`.
+4. Uruchom aplikację i sprawdź wartości:
+   ```bash
+   docker compose exec web python manage.py shell -c "import os; from django.conf import settings; print('ENV=', os.getenv('ENV')); print('SESSION_COOKIE_SECURE=', settings.SESSION_COOKIE_SECURE); print('CSRF_COOKIE_SECURE=', settings.CSRF_COOKIE_SECURE)"
+   ```
+5. W przeglądarce (DevTools → Application/Cookies) potwierdź, że ciasteczka mają flagę `Secure` zgodnie z konfiguracją.
