@@ -44,3 +44,23 @@ Po zakończeniu logowanie do panelu administracyjnego będzie możliwe pod [http
 - `OPENAI_BASE_URL` – alternatywny endpoint (np. Azure/OpenAI-proxy).
 - `OPENAI_ORG` – identyfikator organizacji OpenAI.
 - `OPENAI_PROJECT` – identyfikator projektu OpenAI.
+- `SESSION_COOKIE_SECURE` – flaga `Secure` dla ciasteczka sesji (`0/1`, `true/false`).
+- `CSRF_COOKIE_SECURE` – flaga `Secure` dla ciasteczka CSRF (`0/1`, `true/false`).
+
+### Rekomendowane wartości (dev/prod)
+- **local/dev**: `ENV=dev`, `SESSION_COOKIE_SECURE=0`, `CSRF_COOKIE_SECURE=0`
+- **produkcja**: `ENV=production`, `SESSION_COOKIE_SECURE=1`, `CSRF_COOKIE_SECURE=1`
+
+Jeśli `SESSION_COOKIE_SECURE` i `CSRF_COOKIE_SECURE` nie są ustawione, aplikacja dobiera domyślne wartości na podstawie `ENV`:
+- `ENV=dev` (lub brak `ENV`) → obie flagi `False`
+- `ENV=prod` / `ENV=production` → obie flagi `True`
+
+## Checklist uruchomienia (cookie security)
+1. Skopiuj `.env.example` do `.env` i ustaw `ENV` odpowiednio do środowiska.
+2. Dla dev zostaw `SESSION_COOKIE_SECURE=0` i `CSRF_COOKIE_SECURE=0`.
+3. Dla produkcji ustaw `SESSION_COOKIE_SECURE=1` i `CSRF_COOKIE_SECURE=1`.
+4. Uruchom aplikację i sprawdź wartości:
+   ```bash
+   docker compose exec web python manage.py shell -c "import os; from django.conf import settings; print('ENV=', os.getenv('ENV')); print('SESSION_COOKIE_SECURE=', settings.SESSION_COOKIE_SECURE); print('CSRF_COOKIE_SECURE=', settings.CSRF_COOKIE_SECURE)"
+   ```
+5. W przeglądarce (DevTools → Application/Cookies) potwierdź, że ciasteczka mają flagę `Secure` zgodnie z konfiguracją.
