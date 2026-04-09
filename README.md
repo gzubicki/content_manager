@@ -192,3 +192,7 @@ Jeśli `SESSION_COOKIE_SECURE` i `CSRF_COOKIE_SECURE` nie są ustawione, aplikac
    docker compose exec web python manage.py shell -c "import os; from django.conf import settings; print('ENV=', os.getenv('ENV')); print('SESSION_COOKIE_SECURE=', settings.SESSION_COOKIE_SECURE); print('CSRF_COOKIE_SECURE=', settings.CSRF_COOKIE_SECURE)"
    ```
 5. W przeglądarce (DevTools → Application/Cookies) potwierdź, że ciasteczka mają flagę `Secure` zgodnie z konfiguracją.
+
+## Nowa strategia ingestu źródeł
+
+Szczegółowa propozycja migracji na model „ingest poza OpenAI + rewrite-only” jest opisana w: `docs/source_ingestion_strategy.md`.
