@@ -4,12 +4,12 @@ Drafty generowane wyłącznie przez GPT. Brak fallbacku na tekst statyczny.
 ```bash
 docker compose up -d --build
 docker compose exec web python manage.py migrate
-docker compose exec web python manage.py init_channels
 docker compose restart worker beat
 ```
 
 - Admin: `http://localhost:8000/admin/`
 - Celery worker/beat startują automatycznie.
+- Jeśli używasz własnego seeda kanałów, uruchom odpowiednią komendę inicjalizacyjną projektu.
 - PWA: dodaj do ekranu w Chrome na Androidzie.
 
 ## Tworzenie superadmina
