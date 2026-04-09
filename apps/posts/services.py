@@ -1105,8 +1105,8 @@ def build_draft_generation_prompt(
         recent_headlines=headlines,
     )
     return {
-        "system": instructions,
-        "user": _channel_system_prompt(channel),
+        "system": _channel_system_prompt(channel),
+        "user": instructions,
     }
 
 
@@ -1922,8 +1922,8 @@ def gpt_generate_post_payload(channel: Channel, article: dict[str, Any] | None =
             recent_headlines=headlines,
         )
         raw = gpt_generate_text(
-            system_prompt,
             channel_prompt,
+            system_prompt,
             log_context={
                 "channel_id": channel.id,
                 "attempt": attempt,
