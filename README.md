@@ -1,16 +1,23 @@
 
 Drafty generowane wyłącznie przez GPT. Brak fallbacku na tekst statyczny.
 
-## Start
+## Minimalny bootstrap
+Rzeczywista minimalna kolejność uruchomienia (zgodna z aktualnym kodem):
+
 ```bash
 docker compose up -d --build
 docker compose exec web python manage.py migrate
-docker compose exec web python manage.py init_channels
-docker compose restart worker beat
+docker compose exec web python manage.py createsuperuser
 ```
 
-- Admin: `http://localhost:8000/admin/`
-- Celery worker/beat startują automatycznie.
+Następnie:
+1. Zaloguj się do panelu admina: `http://localhost:8000/admin/`.
+2. Dodaj co najmniej jeden rekord **Kanał** ręcznie w panelu admina (`posts > Kanały`).
+3. (Opcjonalnie) Dodaj źródła przez `posts > Źródła kanału`.
+
+> Nie ma komendy `python manage.py init_channels` w tym repozytorium — inicjalizacja kanałów jest wykonywana ręcznie przez panel administracyjny.
+
+- Celery worker/beat startują automatycznie przez `docker compose`.
 - PWA: dodaj do ekranu w Chrome na Androidzie.
 
 
@@ -29,6 +36,20 @@ Aby dodać nowego superadministratora w środowisku dockerowym:
 3. Podaj wymagane dane (adres e-mail, hasło itp.) w interaktywnym kreatorze.
 
 Po zakończeniu logowanie do panelu administracyjnego będzie możliwe pod [http://localhost:8000/admin/](http://localhost:8000/admin/).
+
+## Komendy `manage.py` użyte w tym README vs kod
+
+Zweryfikowano względem `apps/*/management/commands/`:
+
+- ✅ `python manage.py migrate` — komenda wbudowana Django.
+- ✅ `python manage.py createsuperuser` — komenda wbudowana Django.
+- ❌ `python manage.py init_channels` — **usunięta z README**, brak implementacji w `apps/*/management/commands/`.
+
+Aktualnie jedyna niestandardowa komenda z kodu aplikacji:
+
+```bash
+docker compose exec web python manage.py generate_draft_prompt <channel_id_lub_slug> [--no-headlines] [--article '{"title":"..."}'] [--avoid "tekst"]
+```
 
 
 ## ENV (wymagane)
